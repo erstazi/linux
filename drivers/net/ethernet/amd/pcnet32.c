@@ -24,12 +24,8 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #define DRV_NAME	"pcnet32"
-#define DRV_VERSION	"1.35"
 #define DRV_RELDATE	"21.Apr.2008"
 #define PFX		DRV_NAME ": "
-
-static const char *const version =
-    DRV_NAME ".c:v" DRV_VERSION " " DRV_RELDATE " tsbogend@alpha.franken.de\n";
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -314,14 +310,14 @@ static int pcnet32_open(struct net_device *);
 static int pcnet32_init_ring(struct net_device *);
 static netdev_tx_t pcnet32_start_xmit(struct sk_buff *,
 				      struct net_device *);
-static void pcnet32_tx_timeout(struct net_device *dev);
+static void pcnet32_tx_timeout(struct net_device *dev, unsigned int txqueue);
 static irqreturn_t pcnet32_interrupt(int, void *);
 static int pcnet32_close(struct net_device *);
 static struct net_device_stats *pcnet32_get_stats(struct net_device *);
 static void pcnet32_load_multicast(struct net_device *dev);
 static void pcnet32_set_multicast_list(struct net_device *);
 static int pcnet32_ioctl(struct net_device *, struct ifreq *, int);
-static void pcnet32_watchdog(struct net_device *);
+static void pcnet32_watchdog(struct timer_list *);
 static int mdio_read(struct net_device *dev, int phy_id, int reg_num);
 static void mdio_write(struct net_device *dev, int phy_id, int reg_num,
 		       int val);
@@ -809,7 +805,6 @@ static void pcnet32_get_drvinfo(struct net_device *dev,
 	struct pcnet32_private *lp = netdev_priv(dev);
 
 	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
 	if (lp->pci_dev)
 		strlcpy(info->bus_info, pci_name(lp->pci_dev),
 			sizeof(info->bus_info));
@@ -1552,22 +1547,26 @@ pcnet32_probe_pci(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (!ioaddr) {
 		if (pcnet32_debug & NETIF_MSG_PROBE)
 			pr_err("card has no PCI IO resources, aborting\n");
-		return -ENODEV;
+		err = -ENODEV;
+		goto err_disable_dev;
 	}
 
 	err = pci_set_dma_mask(pdev, PCNET32_DMA_MASK);
 	if (err) {
 		if (pcnet32_debug & NETIF_MSG_PROBE)
 			pr_err("architecture does not support 32bit PCI busmaster DMA\n");
-		return err;
+		goto err_disable_dev;
 	}
 	if (!request_region(ioaddr, PCNET32_TOTAL_SIZE, "pcnet32_probe_pci")) {
 		if (pcnet32_debug & NETIF_MSG_PROBE)
 			pr_err("io address range already allocated\n");
-		return -EBUSY;
+		err = -EBUSY;
+		goto err_disable_dev;
 	}
 
 	err = pcnet32_probe1(ioaddr, 1, pdev);
+
+err_disable_dev:
 	if (err < 0)
 		pci_disable_device(pdev);
 
@@ -1970,9 +1969,7 @@ pcnet32_probe1(unsigned long ioaddr, int shared, struct pci_dev *pdev)
 			lp->options |= PCNET32_PORT_MII;
 	}
 
-	init_timer(&lp->watchdog_timer);
-	lp->watchdog_timer.data = (unsigned long)dev;
-	lp->watchdog_timer.function = (void *)&pcnet32_watchdog;
+	timer_setup(&lp->watchdog_timer, pcnet32_watchdog, 0);
 
 	/* The PCNET32-specific entries in the device structure. */
 	dev->netdev_ops = &pcnet32_netdev_ops;
@@ -2034,22 +2031,22 @@ static int pcnet32_alloc_ring(struct net_device *dev, const char *name)
 	}
 
 	lp->tx_dma_addr = kcalloc(lp->tx_ring_size, sizeof(dma_addr_t),
-				  GFP_ATOMIC);
+				  GFP_KERNEL);
 	if (!lp->tx_dma_addr)
 		return -ENOMEM;
 
 	lp->rx_dma_addr = kcalloc(lp->rx_ring_size, sizeof(dma_addr_t),
-				  GFP_ATOMIC);
+				  GFP_KERNEL);
 	if (!lp->rx_dma_addr)
 		return -ENOMEM;
 
 	lp->tx_skbuff = kcalloc(lp->tx_ring_size, sizeof(struct sk_buff *),
-				GFP_ATOMIC);
+				GFP_KERNEL);
 	if (!lp->tx_skbuff)
 		return -ENOMEM;
 
 	lp->rx_skbuff = kcalloc(lp->rx_ring_size, sizeof(struct sk_buff *),
-				GFP_ATOMIC);
+				GFP_KERNEL);
 	if (!lp->rx_skbuff)
 		return -ENOMEM;
 
@@ -2453,7 +2450,7 @@ static void pcnet32_restart(struct net_device *dev, unsigned int csr0_bits)
 	lp->a->write_csr(ioaddr, CSR0, csr0_bits);
 }
 
-static void pcnet32_tx_timeout(struct net_device *dev)
+static void pcnet32_tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	struct pcnet32_private *lp = netdev_priv(dev);
 	unsigned long ioaddr = dev->base_addr, flags;
@@ -2902,9 +2899,10 @@ static void pcnet32_check_media(struct net_device *dev, int verbose)
  * Could possibly be changed to use mii_check_media instead.
  */
 
-static void pcnet32_watchdog(struct net_device *dev)
+static void pcnet32_watchdog(struct timer_list *t)
 {
-	struct pcnet32_private *lp = netdev_priv(dev);
+	struct pcnet32_private *lp = from_timer(lp, t, watchdog_timer);
+	struct net_device *dev = lp->dev;
 	unsigned long flags;
 
 	/* Print the link status if it has changed */
@@ -3003,8 +3001,6 @@ MODULE_LICENSE("GPL");
 
 static int __init pcnet32_init_module(void)
 {
-	pr_info("%s", version);
-
 	pcnet32_debug = netif_msg_init(debug, PCNET32_MSG_DEFAULT);
 
 	if ((tx_start_pt >= 0) && (tx_start_pt <= 3))

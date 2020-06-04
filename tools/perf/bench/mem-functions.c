@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * mem-memcpy.c
  *
@@ -7,8 +8,7 @@
  */
 
 #include "debug.h"
-#include "../perf.h"
-#include "../util/util.h"
+#include "../perf-sys.h"
 #include <subcmd/parse-options.h>
 #include "../util/header.h"
 #include "../util/cloexec.h"
@@ -20,9 +20,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/time.h>
 #include <errno.h>
 #include <linux/time64.h>
+#include <linux/zalloc.h>
 
 #define K 1024
 

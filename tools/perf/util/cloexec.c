@@ -1,13 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <errno.h>
 #include <sched.h>
-#include "util.h"
-#include "../perf.h"
+#include "util.h" // for sched_getcpu()
+#include "../perf-sys.h"
 #include "cloexec.h"
+#include "event.h"
 #include "asm/bug.h"
 #include "debug.h"
 #include <unistd.h>
-#include <asm/unistd.h>
 #include <sys/syscall.h>
+#include <linux/string.h>
 
 static unsigned long flag = PERF_FLAG_FD_CLOEXEC;
 
@@ -26,7 +28,7 @@ int __weak sched_getcpu(void)
 
 static int perf_flag_probe(void)
 {
-	/* use 'safest' configuration as used in perf_evsel__fallback() */
+	/* use 'safest' configuration as used in evsel__fallback() */
 	struct perf_event_attr attr = {
 		.type = PERF_TYPE_SOFTWARE,
 		.config = PERF_COUNT_SW_CPU_CLOCK,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * vrf.c: device driver to encapsulate a VRF space
  *
@@ -6,11 +7,6 @@
  * Copyright (c) 2015 David Ahern <dsa@cumulusnetworks.com>
  *
  * Based on dummy, team and ipvlan drivers
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/module.h>
@@ -47,9 +43,10 @@ static unsigned int vrf_net_id;
 
 struct net_vrf {
 	struct rtable __rcu	*rth;
-	struct rtable __rcu	*rth_local;
 	struct rt6_info	__rcu	*rt6;
-	struct rt6_info	__rcu	*rt6_local;
+#if IS_ENABLED(CONFIG_IPV6)
+	struct fib6_table	*fib6_table;
+#endif
 	u32                     tb_id;
 };
 
@@ -134,7 +131,6 @@ static int vrf_local_xmit(struct sk_buff *skb, struct net_device *dev,
 	skb_orphan(skb);
 
 	skb_dst_set(skb, dst);
-	skb_dst_force(skb);
 
 	/* set pkt_type to avoid skb hitting packet taps twice -
 	 * once on Tx and again in Rx processing
@@ -169,67 +165,41 @@ static int vrf_ip6_local_out(struct net *net, struct sock *sk,
 static netdev_tx_t vrf_process_v6_outbound(struct sk_buff *skb,
 					   struct net_device *dev)
 {
-	const struct ipv6hdr *iph = ipv6_hdr(skb);
+	const struct ipv6hdr *iph;
 	struct net *net = dev_net(skb->dev);
-	struct flowi6 fl6 = {
-		/* needed to match OIF rule */
-		.flowi6_oif = dev->ifindex,
-		.flowi6_iif = LOOPBACK_IFINDEX,
-		.daddr = iph->daddr,
-		.saddr = iph->saddr,
-		.flowlabel = ip6_flowinfo(iph),
-		.flowi6_mark = skb->mark,
-		.flowi6_proto = iph->nexthdr,
-		.flowi6_flags = FLOWI_FLAG_SKIP_NH_OIF,
-	};
+	struct flowi6 fl6;
 	int ret = NET_XMIT_DROP;
 	struct dst_entry *dst;
 	struct dst_entry *dst_null = &net->ipv6.ip6_null_entry->dst;
 
-	dst = ip6_route_output(net, NULL, &fl6);
-	if (dst == dst_null)
+	if (!pskb_may_pull(skb, ETH_HLEN + sizeof(struct ipv6hdr)))
+		goto err;
+
+	iph = ipv6_hdr(skb);
+
+	memset(&fl6, 0, sizeof(fl6));
+	/* needed to match OIF rule */
+	fl6.flowi6_oif = dev->ifindex;
+	fl6.flowi6_iif = LOOPBACK_IFINDEX;
+	fl6.daddr = iph->daddr;
+	fl6.saddr = iph->saddr;
+	fl6.flowlabel = ip6_flowinfo(iph);
+	fl6.flowi6_mark = skb->mark;
+	fl6.flowi6_proto = iph->nexthdr;
+	fl6.flowi6_flags = FLOWI_FLAG_SKIP_NH_OIF;
+
+	dst = ip6_dst_lookup_flow(net, NULL, &fl6, NULL);
+	if (IS_ERR(dst) || dst == dst_null)
 		goto err;
 
 	skb_dst_drop(skb);
 
 	/* if dst.dev is loopback or the VRF device again this is locally
 	 * originated traffic destined to a local address. Short circuit
-	 * to Rx path using our local dst
+	 * to Rx path
 	 */
-	if (dst->dev == net->loopback_dev || dst->dev == dev) {
-		struct net_vrf *vrf = netdev_priv(dev);
-		struct rt6_info *rt6_local;
-
-		/* release looked up dst and use cached local dst */
-		dst_release(dst);
-
-		rcu_read_lock();
-
-		rt6_local = rcu_dereference(vrf->rt6_local);
-		if (unlikely(!rt6_local)) {
-			rcu_read_unlock();
-			goto err;
-		}
-
-		/* Ordering issue: cached local dst is created on newlink
-		 * before the IPv6 initialization. Using the local dst
-		 * requires rt6i_idev to be set so make sure it is.
-		 */
-		if (unlikely(!rt6_local->rt6i_idev)) {
-			rt6_local->rt6i_idev = in6_dev_get(dev);
-			if (!rt6_local->rt6i_idev) {
-				rcu_read_unlock();
-				goto err;
-			}
-		}
-
-		dst = &rt6_local->dst;
-		dst_hold(dst);
-
-		rcu_read_unlock();
-
-		return vrf_local_xmit(skb, dev, &rt6_local->dst);
-	}
+	if (dst->dev == dev)
+		return vrf_local_xmit(skb, dev, dst);
 
 	skb_dst_set(skb, dst);
 
@@ -273,20 +243,26 @@ static int vrf_ip_local_out(struct net *net, struct sock *sk,
 static netdev_tx_t vrf_process_v4_outbound(struct sk_buff *skb,
 					   struct net_device *vrf_dev)
 {
-	struct iphdr *ip4h = ip_hdr(skb);
+	struct iphdr *ip4h;
 	int ret = NET_XMIT_DROP;
-	struct flowi4 fl4 = {
-		/* needed to match OIF rule */
-		.flowi4_oif = vrf_dev->ifindex,
-		.flowi4_iif = LOOPBACK_IFINDEX,
-		.flowi4_tos = RT_TOS(ip4h->tos),
-		.flowi4_flags = FLOWI_FLAG_ANYSRC | FLOWI_FLAG_SKIP_NH_OIF,
-		.flowi4_proto = ip4h->protocol,
-		.daddr = ip4h->daddr,
-		.saddr = ip4h->saddr,
-	};
+	struct flowi4 fl4;
 	struct net *net = dev_net(vrf_dev);
 	struct rtable *rt;
+
+	if (!pskb_may_pull(skb, ETH_HLEN + sizeof(struct iphdr)))
+		goto err;
+
+	ip4h = ip_hdr(skb);
+
+	memset(&fl4, 0, sizeof(fl4));
+	/* needed to match OIF rule */
+	fl4.flowi4_oif = vrf_dev->ifindex;
+	fl4.flowi4_iif = LOOPBACK_IFINDEX;
+	fl4.flowi4_tos = RT_TOS(ip4h->tos);
+	fl4.flowi4_flags = FLOWI_FLAG_ANYSRC | FLOWI_FLAG_SKIP_NH_OIF;
+	fl4.flowi4_proto = ip4h->protocol;
+	fl4.daddr = ip4h->daddr;
+	fl4.saddr = ip4h->saddr;
 
 	rt = ip_route_output_flow(net, &fl4, NULL);
 	if (IS_ERR(rt))
@@ -296,30 +272,10 @@ static netdev_tx_t vrf_process_v4_outbound(struct sk_buff *skb,
 
 	/* if dst.dev is loopback or the VRF device again this is locally
 	 * originated traffic destined to a local address. Short circuit
-	 * to Rx path using our local dst
+	 * to Rx path
 	 */
-	if (rt->dst.dev == net->loopback_dev || rt->dst.dev == vrf_dev) {
-		struct net_vrf *vrf = netdev_priv(vrf_dev);
-		struct rtable *rth_local;
-		struct dst_entry *dst = NULL;
-
-		ip_rt_put(rt);
-
-		rcu_read_lock();
-
-		rth_local = rcu_dereference(vrf->rth_local);
-		if (likely(rth_local)) {
-			dst = &rth_local->dst;
-			dst_hold(dst);
-		}
-
-		rcu_read_unlock();
-
-		if (unlikely(!dst))
-			goto err;
-
-		return vrf_local_xmit(skb, vrf_dev, dst);
-	}
+	if (rt->dst.dev == vrf_dev)
+		return vrf_local_xmit(skb, vrf_dev, &rt->dst);
 
 	skb_dst_set(skb, &rt->dst);
 
@@ -406,11 +362,11 @@ static int vrf_finish_output6(struct net *net, struct sock *sk,
 {
 	struct dst_entry *dst = skb_dst(skb);
 	struct net_device *dev = dst->dev;
+	const struct in6_addr *nexthop;
 	struct neighbour *neigh;
-	struct in6_addr *nexthop;
 	int ret;
 
-	nf_reset(skb);
+	nf_reset_ct(skb);
 
 	skb->protocol = htons(ETH_P_IPV6);
 	skb->dev = dev;
@@ -422,7 +378,7 @@ static int vrf_finish_output6(struct net *net, struct sock *sk,
 		neigh = __neigh_create(&nd_tbl, nexthop, dst->dev, false);
 	if (!IS_ERR(neigh)) {
 		sock_confirm_neigh(skb, neigh);
-		ret = neigh_output(neigh, skb);
+		ret = neigh_output(neigh, skb, false);
 		rcu_read_unlock_bh();
 		return ret;
 	}
@@ -503,7 +459,7 @@ static struct sk_buff *vrf_ip6_out_direct(struct net_device *vrf_dev,
 
 	/* reset skb device */
 	if (likely(err == 1))
-		nf_reset(skb);
+		nf_reset_ct(skb);
 	else
 		skb = NULL;
 
@@ -518,7 +474,8 @@ static struct sk_buff *vrf_ip6_out(struct net_device *vrf_dev,
 	if (rt6_need_strict(&ipv6_hdr(skb)->daddr))
 		return skb;
 
-	if (qdisc_tx_is_default(vrf_dev))
+	if (qdisc_tx_is_default(vrf_dev) ||
+	    IP6CB(skb)->flags & IP6SKB_XFRM_TRANSFORMED)
 		return vrf_ip6_out_direct(vrf_dev, sk, skb);
 
 	return vrf_ip6_out_redirect(vrf_dev, skb);
@@ -528,12 +485,10 @@ static struct sk_buff *vrf_ip6_out(struct net_device *vrf_dev,
 static void vrf_rt6_release(struct net_device *dev, struct net_vrf *vrf)
 {
 	struct rt6_info *rt6 = rtnl_dereference(vrf->rt6);
-	struct rt6_info *rt6_local = rtnl_dereference(vrf->rt6_local);
 	struct net *net = dev_net(dev);
 	struct dst_entry *dst;
 
 	RCU_INIT_POINTER(vrf->rt6, NULL);
-	RCU_INIT_POINTER(vrf->rt6_local, NULL);
 	synchronize_rcu();
 
 	/* move dev in dst's to loopback so this VRF device can be deleted
@@ -546,36 +501,22 @@ static void vrf_rt6_release(struct net_device *dev, struct net_vrf *vrf)
 		dev_hold(dst->dev);
 		dst_release(dst);
 	}
-
-	if (rt6_local) {
-		if (rt6_local->rt6i_idev) {
-			in6_dev_put(rt6_local->rt6i_idev);
-			rt6_local->rt6i_idev = NULL;
-		}
-
-		dst = &rt6_local->dst;
-		dev_put(dst->dev);
-		dst->dev = net->loopback_dev;
-		dev_hold(dst->dev);
-		dst_release(dst);
-	}
 }
 
 static int vrf_rt6_create(struct net_device *dev)
 {
-	int flags = DST_HOST | DST_NOPOLICY | DST_NOXFRM;
+	int flags = DST_NOPOLICY | DST_NOXFRM;
 	struct net_vrf *vrf = netdev_priv(dev);
 	struct net *net = dev_net(dev);
-	struct fib6_table *rt6i_table;
-	struct rt6_info *rt6, *rt6_local;
+	struct rt6_info *rt6;
 	int rc = -ENOMEM;
 
 	/* IPv6 can be CONFIG enabled and then disabled runtime */
 	if (!ipv6_mod_enabled())
 		return 0;
 
-	rt6i_table = fib6_new_table(net, vrf->tb_id);
-	if (!rt6i_table)
+	vrf->fib6_table = fib6_new_table(net, vrf->tb_id);
+	if (!vrf->fib6_table)
 		goto out;
 
 	/* create a dst for routing packets out a VRF device */
@@ -583,25 +524,9 @@ static int vrf_rt6_create(struct net_device *dev)
 	if (!rt6)
 		goto out;
 
-	rt6->rt6i_table = rt6i_table;
 	rt6->dst.output	= vrf_output6;
 
-	/* create a dst for local routing - packets sent locally
-	 * to local address via the VRF device as a loopback
-	 */
-	rt6_local = ip6_dst_alloc(net, dev, flags);
-	if (!rt6_local) {
-		dst_release(&rt6->dst);
-		goto out;
-	}
-
-	rt6_local->rt6i_idev  = in6_dev_get(dev);
-	rt6_local->rt6i_flags = RTF_UP | RTF_NONEXTHOP | RTF_LOCAL;
-	rt6_local->rt6i_table = rt6i_table;
-	rt6_local->dst.input  = ip6_input;
-
 	rcu_assign_pointer(vrf->rt6, rt6);
-	rcu_assign_pointer(vrf->rt6_local, rt6_local);
 
 	rc = 0;
 out:
@@ -633,10 +558,10 @@ static int vrf_finish_output(struct net *net, struct sock *sk, struct sk_buff *s
 	struct net_device *dev = dst->dev;
 	unsigned int hh_len = LL_RESERVED_SPACE(dev);
 	struct neighbour *neigh;
-	u32 nexthop;
+	bool is_v6gw = false;
 	int ret = -EINVAL;
 
-	nf_reset(skb);
+	nf_reset_ct(skb);
 
 	/* Be paranoid, rather than too clever. */
 	if (unlikely(skb_headroom(skb) < hh_len && dev->header_ops)) {
@@ -656,19 +581,18 @@ static int vrf_finish_output(struct net *net, struct sock *sk, struct sk_buff *s
 
 	rcu_read_lock_bh();
 
-	nexthop = (__force u32)rt_nexthop(rt, ip_hdr(skb)->daddr);
-	neigh = __ipv4_neigh_lookup_noref(dev, nexthop);
-	if (unlikely(!neigh))
-		neigh = __neigh_create(&arp_tbl, &nexthop, dev, false);
+	neigh = ip_neigh_for_gw(rt, skb, &is_v6gw);
 	if (!IS_ERR(neigh)) {
 		sock_confirm_neigh(skb, neigh);
-		ret = neigh_output(neigh, skb);
+		/* if crossing protocols, can not use the cached header */
+		ret = neigh_output(neigh, skb, is_v6gw);
+		rcu_read_unlock_bh();
+		return ret;
 	}
 
 	rcu_read_unlock_bh();
 err:
-	if (unlikely(ret < 0))
-		vrf_tx_error(skb->dev, skb);
+	vrf_tx_error(skb->dev, skb);
 	return ret;
 }
 
@@ -747,7 +671,7 @@ static struct sk_buff *vrf_ip_out_direct(struct net_device *vrf_dev,
 
 	/* reset skb device */
 	if (likely(err == 1))
-		nf_reset(skb);
+		nf_reset_ct(skb);
 	else
 		skb = NULL;
 
@@ -758,11 +682,13 @@ static struct sk_buff *vrf_ip_out(struct net_device *vrf_dev,
 				  struct sock *sk,
 				  struct sk_buff *skb)
 {
-	/* don't divert multicast */
-	if (ipv4_is_multicast(ip_hdr(skb)->daddr))
+	/* don't divert multicast or local broadcast */
+	if (ipv4_is_multicast(ip_hdr(skb)->daddr) ||
+	    ipv4_is_lbcast(ip_hdr(skb)->daddr))
 		return skb;
 
-	if (qdisc_tx_is_default(vrf_dev))
+	if (qdisc_tx_is_default(vrf_dev) ||
+	    IPCB(skb)->flags & IPSKB_XFRM_TRANSFORMED)
 		return vrf_ip_out_direct(vrf_dev, sk, skb);
 
 	return vrf_ip_out_redirect(vrf_dev, skb);
@@ -788,12 +714,10 @@ static struct sk_buff *vrf_l3_out(struct net_device *vrf_dev,
 static void vrf_rtable_release(struct net_device *dev, struct net_vrf *vrf)
 {
 	struct rtable *rth = rtnl_dereference(vrf->rth);
-	struct rtable *rth_local = rtnl_dereference(vrf->rth_local);
 	struct net *net = dev_net(dev);
 	struct dst_entry *dst;
 
 	RCU_INIT_POINTER(vrf->rth, NULL);
-	RCU_INIT_POINTER(vrf->rth_local, NULL);
 	synchronize_rcu();
 
 	/* move dev in dst's to loopback so this VRF device can be deleted
@@ -806,45 +730,24 @@ static void vrf_rtable_release(struct net_device *dev, struct net_vrf *vrf)
 		dev_hold(dst->dev);
 		dst_release(dst);
 	}
-
-	if (rth_local) {
-		dst = &rth_local->dst;
-		dev_put(dst->dev);
-		dst->dev = net->loopback_dev;
-		dev_hold(dst->dev);
-		dst_release(dst);
-	}
 }
 
 static int vrf_rtable_create(struct net_device *dev)
 {
 	struct net_vrf *vrf = netdev_priv(dev);
-	struct rtable *rth, *rth_local;
+	struct rtable *rth;
 
 	if (!fib_new_table(dev_net(dev), vrf->tb_id))
 		return -ENOMEM;
 
 	/* create a dst for routing packets out through a VRF device */
-	rth = rt_dst_alloc(dev, 0, RTN_UNICAST, 1, 1, 0);
+	rth = rt_dst_alloc(dev, 0, RTN_UNICAST, 1, 1);
 	if (!rth)
 		return -ENOMEM;
 
-	/* create a dst for local ingress routing - packets sent locally
-	 * to local address via the VRF device as a loopback
-	 */
-	rth_local = rt_dst_alloc(dev, RTCF_LOCAL, RTN_LOCAL, 1, 1, 0);
-	if (!rth_local) {
-		dst_release(&rth->dst);
-		return -ENOMEM;
-	}
-
 	rth->dst.output	= vrf_output;
-	rth->rt_table_id = vrf->tb_id;
-
-	rth_local->rt_table_id = vrf->tb_id;
 
 	rcu_assign_pointer(vrf->rth, rth);
-	rcu_assign_pointer(vrf->rth_local, rth_local);
 
 	return 0;
 }
@@ -852,7 +755,8 @@ static int vrf_rtable_create(struct net_device *dev)
 /**************************** device handling ********************/
 
 /* cycle interface to flush neighbor cache and move routes across tables */
-static void cycle_netdev(struct net_device *dev)
+static void cycle_netdev(struct net_device *dev,
+			 struct netlink_ext_ack *extack)
 {
 	unsigned int flags = dev->flags;
 	int ret;
@@ -860,9 +764,9 @@ static void cycle_netdev(struct net_device *dev)
 	if (!netif_running(dev))
 		return;
 
-	ret = dev_change_flags(dev, flags & ~IFF_UP);
+	ret = dev_change_flags(dev, flags & ~IFF_UP, extack);
 	if (ret >= 0)
-		ret = dev_change_flags(dev, flags);
+		ret = dev_change_flags(dev, flags, extack);
 
 	if (ret < 0) {
 		netdev_err(dev,
@@ -871,22 +775,26 @@ static void cycle_netdev(struct net_device *dev)
 	}
 }
 
-static int do_vrf_add_slave(struct net_device *dev, struct net_device *port_dev)
+static int do_vrf_add_slave(struct net_device *dev, struct net_device *port_dev,
+			    struct netlink_ext_ack *extack)
 {
 	int ret;
 
 	/* do not allow loopback device to be enslaved to a VRF.
 	 * The vrf device acts as the loopback for the vrf.
 	 */
-	if (port_dev == dev_net(dev)->loopback_dev)
+	if (port_dev == dev_net(dev)->loopback_dev) {
+		NL_SET_ERR_MSG(extack,
+			       "Can not enslave loopback device to a VRF");
 		return -EOPNOTSUPP;
+	}
 
 	port_dev->priv_flags |= IFF_L3MDEV_SLAVE;
-	ret = netdev_master_upper_dev_link(port_dev, dev, NULL, NULL);
+	ret = netdev_master_upper_dev_link(port_dev, dev, NULL, NULL, extack);
 	if (ret < 0)
 		goto err;
 
-	cycle_netdev(port_dev);
+	cycle_netdev(port_dev, extack);
 
 	return 0;
 
@@ -895,12 +803,19 @@ err:
 	return ret;
 }
 
-static int vrf_add_slave(struct net_device *dev, struct net_device *port_dev)
+static int vrf_add_slave(struct net_device *dev, struct net_device *port_dev,
+			 struct netlink_ext_ack *extack)
 {
-	if (netif_is_l3_master(port_dev) || netif_is_l3_slave(port_dev))
+	if (netif_is_l3_master(port_dev)) {
+		NL_SET_ERR_MSG(extack,
+			       "Can not enslave an L3 master device to a VRF");
+		return -EINVAL;
+	}
+
+	if (netif_is_l3_slave(port_dev))
 		return -EINVAL;
 
-	return do_vrf_add_slave(dev, port_dev);
+	return do_vrf_add_slave(dev, port_dev, extack);
 }
 
 /* inverse of do_vrf_add_slave */
@@ -909,7 +824,7 @@ static int do_vrf_del_slave(struct net_device *dev, struct net_device *port_dev)
 	netdev_upper_dev_unlink(port_dev, dev);
 	port_dev->priv_flags &= ~IFF_L3MDEV_SLAVE;
 
-	cycle_netdev(port_dev);
+	cycle_netdev(port_dev, NULL);
 
 	return 0;
 }
@@ -968,6 +883,7 @@ static const struct net_device_ops vrf_netdev_ops = {
 	.ndo_init		= vrf_dev_init,
 	.ndo_uninit		= vrf_dev_uninit,
 	.ndo_start_xmit		= vrf_xmit,
+	.ndo_set_mac_address	= eth_mac_addr,
 	.ndo_get_stats64	= vrf_get_stats64,
 	.ndo_add_slave		= vrf_add_slave,
 	.ndo_del_slave		= vrf_del_slave,
@@ -1037,25 +953,12 @@ static struct rt6_info *vrf_ip6_route_lookup(struct net *net,
 					     const struct net_device *dev,
 					     struct flowi6 *fl6,
 					     int ifindex,
+					     const struct sk_buff *skb,
 					     int flags)
 {
 	struct net_vrf *vrf = netdev_priv(dev);
-	struct fib6_table *table = NULL;
-	struct rt6_info *rt6;
 
-	rcu_read_lock();
-
-	/* fib6_table does not have a refcnt and can not be freed */
-	rt6 = rcu_dereference(vrf->rt6);
-	if (likely(rt6))
-		table = rt6->rt6i_table;
-
-	rcu_read_unlock();
-
-	if (!table)
-		return NULL;
-
-	return ip6_pol_route(net, table, ifindex, fl6, flags);
+	return ip6_pol_route(net, vrf->fib6_table, ifindex, fl6, skb, flags);
 }
 
 static void vrf_ip6_input_dst(struct sk_buff *skb, struct net_device *vrf_dev,
@@ -1063,17 +966,17 @@ static void vrf_ip6_input_dst(struct sk_buff *skb, struct net_device *vrf_dev,
 {
 	const struct ipv6hdr *iph = ipv6_hdr(skb);
 	struct flowi6 fl6 = {
+		.flowi6_iif     = ifindex,
+		.flowi6_mark    = skb->mark,
+		.flowi6_proto   = iph->nexthdr,
 		.daddr          = iph->daddr,
 		.saddr          = iph->saddr,
 		.flowlabel      = ip6_flowinfo(iph),
-		.flowi6_mark    = skb->mark,
-		.flowi6_proto   = iph->nexthdr,
-		.flowi6_iif     = ifindex,
 	};
 	struct net *net = dev_net(vrf_dev);
 	struct rt6_info *rt6;
 
-	rt6 = vrf_ip6_route_lookup(net, vrf_dev, &fl6, ifindex,
+	rt6 = vrf_ip6_route_lookup(net, vrf_dev, &fl6, ifindex, skb,
 				   RT6_LOOKUP_F_HAS_SADDR | RT6_LOOKUP_F_IFACE);
 	if (unlikely(!rt6))
 		return;
@@ -1088,24 +991,23 @@ static struct sk_buff *vrf_ip6_rcv(struct net_device *vrf_dev,
 				   struct sk_buff *skb)
 {
 	int orig_iif = skb->skb_iif;
-	bool need_strict;
+	bool need_strict = rt6_need_strict(&ipv6_hdr(skb)->daddr);
+	bool is_ndisc = ipv6_ndisc_frame(skb);
 
-	/* loopback traffic; do not push through packet taps again.
-	 * Reset pkt_type for upper layers to process skb
+	/* loopback, multicast & non-ND link-local traffic; do not push through
+	 * packet taps again. Reset pkt_type for upper layers to process skb
 	 */
-	if (skb->pkt_type == PACKET_LOOPBACK) {
+	if (skb->pkt_type == PACKET_LOOPBACK || (need_strict && !is_ndisc)) {
 		skb->dev = vrf_dev;
 		skb->skb_iif = vrf_dev->ifindex;
 		IP6CB(skb)->flags |= IP6SKB_L3SLAVE;
-		skb->pkt_type = PACKET_HOST;
+		if (skb->pkt_type == PACKET_LOOPBACK)
+			skb->pkt_type = PACKET_HOST;
 		goto out;
 	}
 
-	/* if packet is NDISC or addressed to multicast or link-local
-	 * then keep the ingress interface
-	 */
-	need_strict = rt6_need_strict(&ipv6_hdr(skb)->daddr);
-	if (!ipv6_ndisc_frame(skb) && !need_strict) {
+	/* if packet is NDISC then keep the ingress interface */
+	if (!is_ndisc) {
 		vrf_rx_stats(vrf_dev, skb->len);
 		skb->dev = vrf_dev;
 		skb->skb_iif = vrf_dev->ifindex;
@@ -1184,12 +1086,14 @@ static struct sk_buff *vrf_l3_rcv(struct net_device *vrf_dev,
 #if IS_ENABLED(CONFIG_IPV6)
 /* send to link-local or multicast address via interface enslaved to
  * VRF device. Force lookup to VRF table without changing flow struct
+ * Note: Caller to this function must hold rcu_read_lock() and no refcnt
+ * is taken on the dst by this function.
  */
 static struct dst_entry *vrf_link_scope_lookup(const struct net_device *dev,
 					      struct flowi6 *fl6)
 {
 	struct net *net = dev_net(dev);
-	int flags = RT6_LOOKUP_F_IFACE;
+	int flags = RT6_LOOKUP_F_IFACE | RT6_LOOKUP_F_DST_NOREF;
 	struct dst_entry *dst = NULL;
 	struct rt6_info *rt;
 
@@ -1199,14 +1103,13 @@ static struct dst_entry *vrf_link_scope_lookup(const struct net_device *dev,
 	 */
 	if (fl6->flowi6_oif == dev->ifindex) {
 		dst = &net->ipv6.ip6_null_entry->dst;
-		dst_hold(dst);
 		return dst;
 	}
 
 	if (!ipv6_addr_any(&fl6->saddr))
 		flags |= RT6_LOOKUP_F_HAS_SADDR;
 
-	rt = vrf_ip6_route_lookup(net, dev, fl6, fl6->flowi6_oif, flags);
+	rt = vrf_ip6_route_lookup(net, dev, fl6, fl6->flowi6_oif, NULL, flags);
 	if (rt)
 		dst = &rt->dst;
 
@@ -1241,6 +1144,7 @@ static inline size_t vrf_fib_rule_nl_size(void)
 	sz  = NLMSG_ALIGN(sizeof(struct fib_rule_hdr));
 	sz += nla_total_size(sizeof(u8));	/* FRA_L3MDEV */
 	sz += nla_total_size(sizeof(u32));	/* FRA_PRIORITY */
+	sz += nla_total_size(sizeof(u8));       /* FRA_PROTOCOL */
 
 	return sz;
 }
@@ -1252,7 +1156,8 @@ static int vrf_fib_rule(const struct net_device *dev, __u8 family, bool add_it)
 	struct sk_buff *skb;
 	int err;
 
-	if (family == AF_INET6 && !ipv6_mod_enabled())
+	if ((family == AF_INET6 || family == RTNL_FAMILY_IP6MR) &&
+	    !ipv6_mod_enabled())
 		return 0;
 
 	skb = nlmsg_new(vrf_fib_rule_nl_size(), GFP_KERNEL);
@@ -1271,7 +1176,10 @@ static int vrf_fib_rule(const struct net_device *dev, __u8 family, bool add_it)
 	frh->family = family;
 	frh->action = FR_ACT_TO_TBL;
 
-	if (nla_put_u32(skb, FRA_L3MDEV, 1))
+	if (nla_put_u8(skb, FRA_PROTOCOL, RTPROT_KERNEL))
+		goto nla_put_failure;
+
+	if (nla_put_u8(skb, FRA_L3MDEV, 1))
 		goto nla_put_failure;
 
 	if (nla_put_u32(skb, FRA_PRIORITY, FIB_RULE_PREF))
@@ -1318,7 +1226,18 @@ static int vrf_add_fib_rules(const struct net_device *dev)
 		goto ipmr_err;
 #endif
 
+#if IS_ENABLED(CONFIG_IPV6_MROUTE_MULTIPLE_TABLES)
+	err = vrf_fib_rule(dev, RTNL_FAMILY_IP6MR, true);
+	if (err < 0)
+		goto ip6mr_err;
+#endif
+
 	return 0;
+
+#if IS_ENABLED(CONFIG_IPV6_MROUTE_MULTIPLE_TABLES)
+ip6mr_err:
+	vrf_fib_rule(dev, RTNL_FAMILY_IPMR,  false);
+#endif
 
 #if IS_ENABLED(CONFIG_IP_MROUTE_MULTIPLE_TABLES)
 ipmr_err:
@@ -1357,7 +1276,7 @@ static void vrf_setup(struct net_device *dev)
 
 	/* enable offload features */
 	dev->features   |= NETIF_F_GSO_SOFTWARE;
-	dev->features   |= NETIF_F_RXCSUM | NETIF_F_HW_CSUM;
+	dev->features   |= NETIF_F_RXCSUM | NETIF_F_HW_CSUM | NETIF_F_SCTP_CRC;
 	dev->features   |= NETIF_F_SG | NETIF_F_FRAGLIST | NETIF_F_HIGHDMA;
 
 	dev->hw_features = dev->features;
@@ -1365,16 +1284,29 @@ static void vrf_setup(struct net_device *dev)
 
 	/* default to no qdisc; user can add if desired */
 	dev->priv_flags |= IFF_NO_QUEUE;
+	dev->priv_flags |= IFF_NO_RX_HANDLER;
+	dev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
+
+	/* VRF devices do not care about MTU, but if the MTU is set
+	 * too low then the ipv4 and ipv6 protocols are disabled
+	 * which breaks networking.
+	 */
+	dev->min_mtu = IPV6_MIN_MTU;
+	dev->max_mtu = ETH_MAX_MTU;
 }
 
 static int vrf_validate(struct nlattr *tb[], struct nlattr *data[],
 			struct netlink_ext_ack *extack)
 {
 	if (tb[IFLA_ADDRESS]) {
-		if (nla_len(tb[IFLA_ADDRESS]) != ETH_ALEN)
+		if (nla_len(tb[IFLA_ADDRESS]) != ETH_ALEN) {
+			NL_SET_ERR_MSG(extack, "Invalid hardware address");
 			return -EINVAL;
-		if (!is_valid_ether_addr(nla_data(tb[IFLA_ADDRESS])))
+		}
+		if (!is_valid_ether_addr(nla_data(tb[IFLA_ADDRESS]))) {
+			NL_SET_ERR_MSG(extack, "Invalid hardware address");
 			return -EADDRNOTAVAIL;
+		}
 	}
 	return 0;
 }
@@ -1399,12 +1331,17 @@ static int vrf_newlink(struct net *src_net, struct net_device *dev,
 	struct net *net;
 	int err;
 
-	if (!data || !data[IFLA_VRF_TABLE])
+	if (!data || !data[IFLA_VRF_TABLE]) {
+		NL_SET_ERR_MSG(extack, "VRF table id is missing");
 		return -EINVAL;
+	}
 
 	vrf->tb_id = nla_get_u32(data[IFLA_VRF_TABLE]);
-	if (vrf->tb_id == RT_TABLE_UNSPEC)
+	if (vrf->tb_id == RT_TABLE_UNSPEC) {
+		NL_SET_ERR_MSG_ATTR(extack, data[IFLA_VRF_TABLE],
+				    "Invalid VRF table id");
 		return -EINVAL;
+	}
 
 	dev->priv_flags |= IFF_L3MDEV_MASTER;
 

@@ -85,7 +85,7 @@ struct rvt_mregion {
 	u8  lkey_published;     /* in global table */
 	struct percpu_ref refcount;
 	struct completion comp; /* complete when refcount goes to zero */
-	struct rvt_segarray *map[0];    /* the segments */
+	struct rvt_segarray *map[];    /* the segments */
 };
 
 #define RVT_MAX_LKEY_TABLE_BITS 23
@@ -190,5 +190,8 @@ static inline void rvt_skip_sge(struct rvt_sge_state *ss, u32 length,
 		length -= len;
 	}
 }
+
+bool rvt_ss_has_lkey(struct rvt_sge_state *ss, u32 lkey);
+bool rvt_mr_has_lkey(struct rvt_mregion *mr, u32 lkey);
 
 #endif          /* DEF_RDMAVT_INCMRH */

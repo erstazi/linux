@@ -1,30 +1,31 @@
+// SPDX-License-Identifier: GPL-2.0
 /* Copyright (C) 2011-2013 Freescale Semiconductor, Inc.
  *
  * derived from imx-hdmi.c(renamed to bridge/dw_hdmi.c now)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
-#include <linux/module.h>
-#include <linux/platform_device.h>
+
 #include <linux/component.h>
 #include <linux/mfd/syscon.h>
 #include <linux/mfd/syscon/imx6q-iomuxc-gpr.h>
-#include <drm/bridge/dw_hdmi.h>
-#include <video/imx-ipu-v3.h>
+#include <linux/module.h>
+#include <linux/platform_device.h>
 #include <linux/regmap.h>
-#include <drm/drm_of.h>
-#include <drm/drmP.h>
-#include <drm/drm_crtc_helper.h>
+
+#include <video/imx-ipu-v3.h>
+
+#include <drm/bridge/dw_hdmi.h>
+#include <drm/drm_atomic_helper.h>
 #include <drm/drm_edid.h>
-#include <drm/drm_encoder_slave.h>
+#include <drm/drm_encoder.h>
+#include <drm/drm_of.h>
+#include <drm/drm_simple_kms_helper.h>
 
 #include "imx-drm.h"
 
 struct imx_hdmi {
 	struct device *dev;
 	struct drm_encoder encoder;
+	struct dw_hdmi *hdmi;
 	struct regmap *regmap;
 };
 
@@ -143,10 +144,6 @@ static const struct drm_encoder_helper_funcs dw_hdmi_imx_encoder_helper_funcs = 
 	.atomic_check = dw_hdmi_imx_atomic_check,
 };
 
-static const struct drm_encoder_funcs dw_hdmi_imx_encoder_funcs = {
-	.destroy = drm_encoder_cleanup,
-};
-
 static enum drm_mode_status
 imx6q_hdmi_mode_valid(struct drm_connector *con,
 		      const struct drm_display_mode *mode)
@@ -236,17 +233,20 @@ static int dw_hdmi_imx_bind(struct device *dev, struct device *master,
 		return ret;
 
 	drm_encoder_helper_add(encoder, &dw_hdmi_imx_encoder_helper_funcs);
-	drm_encoder_init(drm, encoder, &dw_hdmi_imx_encoder_funcs,
-			 DRM_MODE_ENCODER_TMDS, NULL);
+	drm_simple_encoder_init(drm, encoder, DRM_MODE_ENCODER_TMDS);
 
-	ret = dw_hdmi_bind(pdev, encoder, plat_data);
+	platform_set_drvdata(pdev, hdmi);
+
+	hdmi->hdmi = dw_hdmi_bind(pdev, encoder, plat_data);
 
 	/*
 	 * If dw_hdmi_bind() fails we'll never call dw_hdmi_unbind(),
 	 * which would have called the encoder cleanup.  Do it manually.
 	 */
-	if (ret)
+	if (IS_ERR(hdmi->hdmi)) {
+		ret = PTR_ERR(hdmi->hdmi);
 		drm_encoder_cleanup(encoder);
+	}
 
 	return ret;
 }
@@ -254,7 +254,9 @@ static int dw_hdmi_imx_bind(struct device *dev, struct device *master,
 static void dw_hdmi_imx_unbind(struct device *dev, struct device *master,
 			       void *data)
 {
-	return dw_hdmi_unbind(dev);
+	struct imx_hdmi *hdmi = dev_get_drvdata(dev);
+
+	dw_hdmi_unbind(hdmi->hdmi);
 }
 
 static const struct component_ops dw_hdmi_imx_ops = {

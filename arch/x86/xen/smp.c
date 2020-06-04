@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/smp.h>
 #include <linux/cpu.h>
 #include <linux/slab.h>
@@ -121,6 +122,8 @@ void __init xen_smp_cpus_done(unsigned int max_cpus)
 
 	if (xen_hvm_domain())
 		native_smp_cpus_done(max_cpus);
+	else
+		calculate_max_logical_packages();
 
 	if (xen_have_vcpu_info_placement)
 		return;
@@ -129,7 +132,7 @@ void __init xen_smp_cpus_done(unsigned int max_cpus)
 		if (xen_vcpu_nr(cpu) < MAX_VIRT_CPUS)
 			continue;
 
-		rc = cpu_down(cpu);
+		rc = remove_cpu(cpu);
 
 		if (rc == 0) {
 			/*

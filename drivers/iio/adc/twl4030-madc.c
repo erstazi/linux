@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *
  * TWL4030 MADC module driver-This driver monitors the real time
@@ -12,21 +13,6 @@
  * Mikko Ylinen <mikko.k.ylinen@nokia.com>
  *
  * Amit Kucheria <amit.kucheria@canonical.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #include <linux/device.h>
@@ -35,7 +21,7 @@
 #include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
-#include <linux/i2c/twl.h>
+#include <linux/mfd/twl.h>
 #include <linux/module.h>
 #include <linux/stddef.h>
 #include <linux/mutex.h>
@@ -212,7 +198,6 @@ static int twl4030_madc_read(struct iio_dev *iio_dev,
 
 static const struct iio_info twl4030_madc_iio_info = {
 	.read_raw = &twl4030_madc_read,
-	.driver_module = THIS_MODULE,
 };
 
 #define TWL4030_ADC_CHANNEL(_channel, _type, _name) {	\
@@ -510,7 +495,7 @@ static irqreturn_t twl4030_madc_threaded_irq_handler(int irq, void *_madc)
 		ret = twl4030_madc_disable_irq(madc, i);
 		if (ret < 0)
 			dev_dbg(madc->dev, "Disable interrupt failed %d\n", i);
-		madc->requests[i].result_pending = 1;
+		madc->requests[i].result_pending = true;
 	}
 	for (i = 0; i < TWL4030_MADC_NUM_METHODS; i++) {
 		r = &madc->requests[i];
@@ -522,8 +507,8 @@ static irqreturn_t twl4030_madc_threaded_irq_handler(int irq, void *_madc)
 		len = twl4030_madc_read_channels(madc, method->rbase,
 						 r->channels, r->rbuf, r->raw);
 		/* Free request */
-		r->result_pending = 0;
-		r->active = 0;
+		r->result_pending = false;
+		r->active = false;
 	}
 	mutex_unlock(&madc->lock);
 
@@ -536,15 +521,15 @@ err_i2c:
 	 */
 	for (i = 0; i < TWL4030_MADC_NUM_METHODS; i++) {
 		r = &madc->requests[i];
-		if (r->active == 0)
+		if (!r->active)
 			continue;
 		method = &twl4030_conversion_methods[r->method];
 		/* Read results */
 		len = twl4030_madc_read_channels(madc, method->rbase,
 						 r->channels, r->rbuf, r->raw);
 		/* Free request */
-		r->result_pending = 0;
-		r->active = 0;
+		r->result_pending = false;
+		r->active = false;
 	}
 	mutex_unlock(&madc->lock);
 
@@ -667,16 +652,16 @@ static int twl4030_madc_conversion(struct twl4030_madc_request *req)
 	ret = twl4030_madc_start_conversion(twl4030_madc, req->method);
 	if (ret < 0)
 		goto out;
-	twl4030_madc->requests[req->method].active = 1;
+	twl4030_madc->requests[req->method].active = true;
 	/* Wait until conversion is ready (ctrl register returns EOC) */
 	ret = twl4030_madc_wait_conversion_ready(twl4030_madc, 5, method->ctrl);
 	if (ret) {
-		twl4030_madc->requests[req->method].active = 0;
+		twl4030_madc->requests[req->method].active = false;
 		goto out;
 	}
 	ret = twl4030_madc_read_channels(twl4030_madc, method->rbase,
 					 req->channels, req->rbuf, req->raw);
-	twl4030_madc->requests[req->method].active = 0;
+	twl4030_madc->requests[req->method].active = false;
 
 out:
 	mutex_unlock(&twl4030_madc->lock);
@@ -887,21 +872,27 @@ static int twl4030_madc_probe(struct platform_device *pdev)
 
 	/* Enable 3v1 bias regulator for MADC[3:6] */
 	madc->usb3v1 = devm_regulator_get(madc->dev, "vusb3v1");
-	if (IS_ERR(madc->usb3v1))
-		return -ENODEV;
+	if (IS_ERR(madc->usb3v1)) {
+		ret = -ENODEV;
+		goto err_i2c;
+	}
 
 	ret = regulator_enable(madc->usb3v1);
-	if (ret)
+	if (ret) {
 		dev_err(madc->dev, "could not enable 3v1 bias regulator\n");
+		goto err_i2c;
+	}
 
 	ret = iio_device_register(iio_dev);
 	if (ret) {
 		dev_err(&pdev->dev, "could not register iio device\n");
-		goto err_i2c;
+		goto err_usb3v1;
 	}
 
 	return 0;
 
+err_usb3v1:
+	regulator_disable(madc->usb3v1);
 err_i2c:
 	twl4030_madc_set_current_generator(madc, 0, 0);
 err_current_generator:

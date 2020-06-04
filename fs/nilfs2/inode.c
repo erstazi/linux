@@ -1,17 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * inode.c - NILFS inode operations.
  *
  * Copyright (C) 2005-2008 Nippon Telegraph and Telephone Corporation.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  *
  * Written by Ryusuke Konishi.
  *
@@ -154,18 +145,9 @@ static int nilfs_readpage(struct file *file, struct page *page)
 	return mpage_readpage(page, nilfs_get_block);
 }
 
-/**
- * nilfs_readpages() - implement readpages() method of nilfs_aops {}
- * address_space_operations.
- * @file - file struct of the file to be read
- * @mapping - address_space struct used for reading multiple pages
- * @pages - the pages to be read
- * @nr_pages - number of pages to be read
- */
-static int nilfs_readpages(struct file *file, struct address_space *mapping,
-			   struct list_head *pages, unsigned int nr_pages)
+static void nilfs_readahead(struct readahead_control *rac)
 {
-	return mpage_readpages(mapping, pages, nr_pages, nilfs_get_block);
+	mpage_readahead(rac, nilfs_get_block);
 }
 
 static int nilfs_writepages(struct address_space *mapping,
@@ -174,7 +156,7 @@ static int nilfs_writepages(struct address_space *mapping,
 	struct inode *inode = mapping->host;
 	int err = 0;
 
-	if (inode->i_sb->s_flags & MS_RDONLY) {
+	if (sb_rdonly(inode->i_sb)) {
 		nilfs_clear_dirty_pages(mapping, false);
 		return -EROFS;
 	}
@@ -191,7 +173,7 @@ static int nilfs_writepage(struct page *page, struct writeback_control *wbc)
 	struct inode *inode = page->mapping->host;
 	int err;
 
-	if (inode->i_sb->s_flags & MS_RDONLY) {
+	if (sb_rdonly(inode->i_sb)) {
 		/*
 		 * It means that filesystem was remounted in read-only
 		 * mode because of error or metadata corruption. But we
@@ -317,7 +299,7 @@ const struct address_space_operations nilfs_aops = {
 	.readpage		= nilfs_readpage,
 	.writepages		= nilfs_writepages,
 	.set_page_dirty		= nilfs_set_page_dirty,
-	.readpages		= nilfs_readpages,
+	.readahead		= nilfs_readahead,
 	.write_begin		= nilfs_write_begin,
 	.write_end		= nilfs_write_end,
 	/* .releasepage		= nilfs_releasepage, */

@@ -15,7 +15,7 @@
 #include <linux/kvm_host.h>
 #include <linux/vmalloc.h>
 #include <linux/fs.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/random.h>
 #include <asm/page.h>
 #include <asm/cacheflush.h>
@@ -64,7 +64,7 @@ static int kvm_compute_return_epc(struct kvm_vcpu *vcpu, unsigned long instpc,
 		switch (insn.r_format.func) {
 		case jalr_op:
 			arch->gprs[insn.r_format.rd] = epc + 8;
-			/* Fall through */
+			fallthrough;
 		case jr_op:
 			nextpc = arch->gprs[insn.r_format.rs];
 			break;
@@ -140,6 +140,7 @@ static int kvm_compute_return_epc(struct kvm_vcpu *vcpu, unsigned long instpc,
 		/* These are unconditional and in j_format. */
 	case jal_op:
 		arch->gprs[31] = instpc + 8;
+		fallthrough;
 	case j_op:
 		epc += 4;
 		epc >>= 28;
@@ -1016,10 +1017,10 @@ static void kvm_mips_change_entryhi(struct kvm_vcpu *vcpu,
 		 */
 		preempt_disable();
 		cpu = smp_processor_id();
-		get_new_mmu_context(kern_mm, cpu);
+		get_new_mmu_context(kern_mm);
 		for_each_possible_cpu(i)
 			if (i != cpu)
-				cpu_context(i, kern_mm) = 0;
+				set_cpu_context(i, kern_mm, 0);
 		preempt_enable();
 	}
 	kvm_write_c0_guest_entryhi(cop0, entryhi);
@@ -1090,8 +1091,8 @@ static void kvm_mips_invalidate_guest_tlb(struct kvm_vcpu *vcpu,
 		if (i == cpu)
 			continue;
 		if (user)
-			cpu_context(i, user_mm) = 0;
-		cpu_context(i, kern_mm) = 0;
+			set_cpu_context(i, user_mm, 0);
+		set_cpu_context(i, kern_mm, 0);
 	}
 
 	preempt_enable();
@@ -1141,9 +1142,7 @@ enum emulation_result kvm_mips_emul_tlbwr(struct kvm_vcpu *vcpu)
 	unsigned long pc = vcpu->arch.pc;
 	int index;
 
-	get_random_bytes(&index, sizeof(index));
-	index &= (KVM_MIPS_GUEST_TLB_SIZE - 1);
-
+	index = prandom_u32_max(KVM_MIPS_GUEST_TLB_SIZE);
 	tlb = &vcpu->arch.guest_tlb[index];
 
 	kvm_mips_invalidate_guest_tlb(vcpu, tlb);
@@ -1725,14 +1724,14 @@ enum emulation_result kvm_mips_emulate_load(union mips_instruction inst,
 
 	case lhu_op:
 		vcpu->mmio_needed = 1;	/* unsigned */
-		/* fall through */
+		fallthrough;
 	case lh_op:
 		run->mmio.len = 2;
 		break;
 
 	case lbu_op:
 		vcpu->mmio_needed = 1;	/* unsigned */
-		/* fall through */
+		fallthrough;
 	case lb_op:
 		run->mmio.len = 1;
 		break;
@@ -1791,7 +1790,7 @@ static enum emulation_result kvm_mips_guest_cache_op(int (*fn)(unsigned long),
 			return EMULATE_EXCEPT;
 		default:
 			break;
-		};
+		}
 	}
 }
 
@@ -1966,7 +1965,7 @@ enum emulation_result kvm_mips_emulate_inst(u32 cause, u32 *opc,
 			break;
 		default:
 			goto unknown;
-		};
+		}
 		break;
 unknown:
 #endif

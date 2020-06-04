@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * ring buffer based function tracer
  *
@@ -100,7 +101,7 @@ static int function_trace_init(struct trace_array *tr)
 
 	ftrace_init_array_ops(tr, func);
 
-	tr->trace_buffer.cpu = get_cpu();
+	tr->array_buffer.cpu = get_cpu();
 	put_cpu();
 
 	tracing_start_cmdline_record();
@@ -117,7 +118,7 @@ static void function_trace_reset(struct trace_array *tr)
 
 static void function_trace_start(struct trace_array *tr)
 {
-	tracing_reset_online_cpus(&tr->trace_buffer);
+	tracing_reset_online_cpus(&tr->array_buffer);
 }
 
 static void
@@ -142,7 +143,7 @@ function_trace_call(unsigned long ip, unsigned long parent_ip,
 		goto out;
 
 	cpu = smp_processor_id();
-	data = per_cpu_ptr(tr->trace_buffer.data, cpu);
+	data = per_cpu_ptr(tr->array_buffer.data, cpu);
 	if (!atomic_read(&data->disabled)) {
 		local_save_flags(flags);
 		trace_function(tr, ip, parent_ip, flags, pc);
@@ -152,6 +153,24 @@ function_trace_call(unsigned long ip, unsigned long parent_ip,
  out:
 	preempt_enable_notrace();
 }
+
+#ifdef CONFIG_UNWINDER_ORC
+/*
+ * Skip 2:
+ *
+ *   function_stack_trace_call()
+ *   ftrace_call()
+ */
+#define STACK_SKIP 2
+#else
+/*
+ * Skip 3:
+ *   __trace_stack()
+ *   function_stack_trace_call()
+ *   ftrace_call()
+ */
+#define STACK_SKIP 3
+#endif
 
 static void
 function_stack_trace_call(unsigned long ip, unsigned long parent_ip,
@@ -173,21 +192,13 @@ function_stack_trace_call(unsigned long ip, unsigned long parent_ip,
 	 */
 	local_irq_save(flags);
 	cpu = raw_smp_processor_id();
-	data = per_cpu_ptr(tr->trace_buffer.data, cpu);
+	data = per_cpu_ptr(tr->array_buffer.data, cpu);
 	disabled = atomic_inc_return(&data->disabled);
 
 	if (likely(disabled == 1)) {
 		pc = preempt_count();
 		trace_function(tr, ip, parent_ip, flags, pc);
-		/*
-		 * skip over 5 funcs:
-		 *    __ftrace_trace_stack,
-		 *    __trace_stack,
-		 *    function_stack_trace_call
-		 *    ftrace_list_func
-		 *    ftrace_call
-		 */
-		__trace_stack(tr, flags, 5, pc);
+		__trace_stack(tr, flags, STACK_SKIP, pc);
 	}
 
 	atomic_dec(&data->disabled);
@@ -366,14 +377,27 @@ ftrace_traceoff(unsigned long ip, unsigned long parent_ip,
 	tracer_tracing_off(tr);
 }
 
+#ifdef CONFIG_UNWINDER_ORC
 /*
- * Skip 4:
- *   ftrace_stacktrace()
+ * Skip 3:
+ *
  *   function_trace_probe_call()
- *   ftrace_ops_list_func()
+ *   ftrace_ops_assist_func()
  *   ftrace_call()
  */
-#define STACK_SKIP 4
+#define FTRACE_STACK_SKIP 3
+#else
+/*
+ * Skip 5:
+ *
+ *   __trace_stack()
+ *   ftrace_stacktrace()
+ *   function_trace_probe_call()
+ *   ftrace_ops_assist_func()
+ *   ftrace_call()
+ */
+#define FTRACE_STACK_SKIP 5
+#endif
 
 static __always_inline void trace_stack(struct trace_array *tr)
 {
@@ -383,7 +407,7 @@ static __always_inline void trace_stack(struct trace_array *tr)
 	local_save_flags(flags);
 	pc = preempt_count();
 
-	__trace_stack(tr, flags, STACK_SKIP, pc);
+	__trace_stack(tr, flags, FTRACE_STACK_SKIP, pc);
 }
 
 static void

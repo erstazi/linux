@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_PGTABLE_32_H
 #define _ASM_X86_PGTABLE_32_H
 
@@ -28,14 +29,13 @@ extern pgd_t swapper_pg_dir[1024];
 extern pgd_t initial_page_table[1024];
 extern pmd_t initial_pg_pmd[];
 
-static inline void pgtable_cache_init(void) { }
-static inline void check_pgt_cache(void) { }
 void paging_init(void);
+void sync_initial_page_table(void);
 
 /*
  * Define this if things work differently on an i386 and an i486:
  * it will (on an i486) warn about kernel memory accesses that are
- * done without a 'access_ok(VERIFY_WRITE,..)'
+ * done without a 'access_ok( ..)'
  */
 #undef TEST_ACCESS_OK
 
@@ -60,14 +60,13 @@ void paging_init(void);
 #define kpte_clear_flush(ptep, vaddr)		\
 do {						\
 	pte_clear(&init_mm, (vaddr), (ptep));	\
-	__flush_tlb_one((vaddr));		\
+	__flush_tlb_one_kernel((vaddr));		\
 } while (0)
 
 #endif /* !__ASSEMBLY__ */
 
 /*
- * kern_addr_valid() is (1) for FLATMEM and (0) for
- * SPARSEMEM and DISCONTIGMEM
+ * kern_addr_valid() is (1) for FLATMEM and (0) for SPARSEMEM
  */
 #ifdef CONFIG_FLATMEM
 #define kern_addr_valid(addr)	(1)
@@ -104,6 +103,6 @@ do {						\
  * with only a host target support using a 32-bit type for internal
  * representation.
  */
-#define LOWMEM_PAGES ((((2<<31) - __PAGE_OFFSET) >> PAGE_SHIFT))
+#define LOWMEM_PAGES ((((_ULL(2)<<31) - __PAGE_OFFSET) >> PAGE_SHIFT))
 
 #endif /* _ASM_X86_PGTABLE_32_H */

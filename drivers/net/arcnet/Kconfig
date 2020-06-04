@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 #
 # Arcnet configuration
 #
@@ -8,7 +9,7 @@ menuconfig ARCNET
 	---help---
 	  If you have a network card of this type, say Y and check out the
 	  (arguably) beautiful poetry in
-	  <file:Documentation/networking/arcnet.txt>.
+	  <file:Documentation/networking/arcnet.rst>.
 
 	  You need both this driver, and the driver for the particular ARCnet
 	  chipset of your card. If you don't know, then it's probably a
@@ -27,7 +28,7 @@ config ARCNET_1201
 	  arc0 device.  You need to say Y here to communicate with
 	  industry-standard RFC1201 implementations, like the arcether.com
 	  packet driver or most DOS/Windows ODI drivers.  Please read the
-	  ARCnet documentation in <file:Documentation/networking/arcnet.txt>
+	  ARCnet documentation in <file:Documentation/networking/arcnet.rst>
 	  for more information about using arc0.
 
 config ARCNET_1051
@@ -41,7 +42,7 @@ config ARCNET_1051
 	  industry-standard RFC1201 implementations, like the arcether.com
 	  packet driver or most DOS/Windows ODI drivers. RFC1201 is included
 	  automatically as the arc0 device. Please read the ARCnet
-	  documentation in <file:Documentation/networking/arcnet.txt> for more
+	  documentation in <file:Documentation/networking/arcnet.rst> for more
 	  information about using arc0e and arc0s.
 
 config ARCNET_RAW
@@ -55,19 +56,19 @@ config ARCNET_CAP
 	tristate "Enable CAP mode packet interface"
 	help
 	  ARCnet "cap mode" packet encapsulation. Used to get the hardware
-          acknowledge back to userspace. After the initial protocol byte every
-          packet is stuffed with an extra 4 byte "cookie" which doesn't
-          actually appear on the network. After transmit the driver will send
-          back a packet with protocol byte 0 containing the status of the
-          transmission:
-             0=no hardware acknowledge
-             1=excessive nak
-             2=transmission accepted by the receiver hardware
+	  acknowledge back to userspace. After the initial protocol byte every
+	  packet is stuffed with an extra 4 byte "cookie" which doesn't
+	  actually appear on the network. After transmit the driver will send
+	  back a packet with protocol byte 0 containing the status of the
+	  transmission:
+	     0=no hardware acknowledge
+	     1=excessive nak
+	     2=transmission accepted by the receiver hardware
 
-          Received packets are also stuffed with the extra 4 bytes but it will
-          be random data.
+	  Received packets are also stuffed with the extra 4 bytes but it will
+	  be random data.
 
-          Cap only listens to protocol 1-8.
+	  Cap only listens to protocol 1-8.
 
 config ARCNET_COM90xx
 	tristate "ARCnet COM90xx (normal) chipset driver"

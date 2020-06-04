@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __SPARC64_CHECKSUM_H
 #define __SPARC64_CHECKSUM_H
 
@@ -45,7 +46,7 @@ long __csum_partial_copy_from_user(const void __user *src,
 				   __wsum sum);
 
 static inline __wsum
-csum_partial_copy_from_user(const void __user *src,
+csum_and_copy_from_user(const void __user *src,
 			    void *dst, int len,
 			    __wsum sum, int *err)
 {

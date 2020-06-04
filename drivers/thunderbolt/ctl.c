@@ -1,7 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Thunderbolt Cactus Ridge driver - control channel and configuration commands
+ * Thunderbolt driver - control channel and configuration commands
  *
  * Copyright (c) 2014 Andreas Noever <andreas.noever@gmail.com>
+ * Copyright (C) 2018, Intel Corporation
  */
 
 #include <linux/crc32.h>
@@ -289,20 +291,6 @@ static void tb_cfg_print_error(struct tb_ctl *ctl,
 	}
 }
 
-static void cpu_to_be32_array(__be32 *dst, const u32 *src, size_t len)
-{
-	int i;
-	for (i = 0; i < len; i++)
-		dst[i] = cpu_to_be32(src[i]);
-}
-
-static void be32_to_cpu_array(u32 *dst, __be32 *src, size_t len)
-{
-	int i;
-	for (i = 0; i < len; i++)
-		dst[i] = be32_to_cpu(src[i]);
-}
-
 static __be32 tb_crc(const void *data, size_t len)
 {
 	return cpu_to_be32(~__crc32c_le(~0, data, len));
@@ -373,7 +361,7 @@ static int tb_ctl_tx(struct tb_ctl *ctl, const void *data, size_t len,
 	cpu_to_be32_array(pkg->buffer, data, len / 4);
 	*(__be32 *) (pkg->buffer + len) = tb_crc(pkg->buffer, len);
 
-	res = ring_tx(ctl->tx, &pkg->frame);
+	res = tb_ring_tx(ctl->tx, &pkg->frame);
 	if (res) /* ring is stopped */
 		tb_ctl_pkg_free(pkg);
 	return res;
@@ -382,15 +370,15 @@ static int tb_ctl_tx(struct tb_ctl *ctl, const void *data, size_t len,
 /**
  * tb_ctl_handle_event() - acknowledge a plug event, invoke ctl->callback
  */
-static void tb_ctl_handle_event(struct tb_ctl *ctl, enum tb_cfg_pkg_type type,
+static bool tb_ctl_handle_event(struct tb_ctl *ctl, enum tb_cfg_pkg_type type,
 				struct ctl_pkg *pkg, size_t size)
 {
-	ctl->callback(ctl->callback_data, type, pkg->buffer, size);
+	return ctl->callback(ctl->callback_data, type, pkg->buffer, size);
 }
 
 static void tb_ctl_rx_submit(struct ctl_pkg *pkg)
 {
-	ring_rx(pkg->ctl->rx, &pkg->frame); /*
+	tb_ring_rx(pkg->ctl->rx, &pkg->frame); /*
 					     * We ignore failures during stop.
 					     * All rx packets are referenced
 					     * from ctl->rx_packets, so we do
@@ -458,6 +446,8 @@ static void tb_ctl_rx_callback(struct tb_ring *ring, struct ring_frame *frame,
 		break;
 
 	case TB_CFG_PKG_EVENT:
+	case TB_CFG_PKG_XDOMAIN_RESP:
+	case TB_CFG_PKG_XDOMAIN_REQ:
 		if (*(__be32 *)(pkg->buffer + frame->size) != crc32) {
 			tb_ctl_err(pkg->ctl,
 				   "RX: checksum mismatch, dropping packet\n");
@@ -465,8 +455,9 @@ static void tb_ctl_rx_callback(struct tb_ring *ring, struct ring_frame *frame,
 		}
 		/* Fall through */
 	case TB_CFG_PKG_ICM_EVENT:
-		tb_ctl_handle_event(pkg->ctl, frame->eof, pkg, frame->size);
-		goto rx;
+		if (tb_ctl_handle_event(pkg->ctl, frame->eof, pkg, frame->size))
+			goto rx;
+		break;
 
 	default:
 		break;
@@ -625,11 +616,12 @@ struct tb_ctl *tb_ctl_alloc(struct tb_nhi *nhi, event_cb cb, void *cb_data)
 	if (!ctl->frame_pool)
 		goto err;
 
-	ctl->tx = ring_alloc_tx(nhi, 0, 10, RING_FLAG_NO_SUSPEND);
+	ctl->tx = tb_ring_alloc_tx(nhi, 0, 10, RING_FLAG_NO_SUSPEND);
 	if (!ctl->tx)
 		goto err;
 
-	ctl->rx = ring_alloc_rx(nhi, 0, 10, RING_FLAG_NO_SUSPEND);
+	ctl->rx = tb_ring_alloc_rx(nhi, 0, 10, RING_FLAG_NO_SUSPEND, 0xffff,
+				0xffff, NULL, NULL);
 	if (!ctl->rx)
 		goto err;
 
@@ -640,7 +632,7 @@ struct tb_ctl *tb_ctl_alloc(struct tb_nhi *nhi, event_cb cb, void *cb_data)
 		ctl->rx_packets[i]->frame.callback = tb_ctl_rx_callback;
 	}
 
-	tb_ctl_info(ctl, "control channel created\n");
+	tb_ctl_dbg(ctl, "control channel created\n");
 	return ctl;
 err:
 	tb_ctl_free(ctl);
@@ -662,17 +654,16 @@ void tb_ctl_free(struct tb_ctl *ctl)
 		return;
 
 	if (ctl->rx)
-		ring_free(ctl->rx);
+		tb_ring_free(ctl->rx);
 	if (ctl->tx)
-		ring_free(ctl->tx);
+		tb_ring_free(ctl->tx);
 
 	/* free RX packets */
 	for (i = 0; i < TB_CTL_RX_PKG_COUNT; i++)
 		tb_ctl_pkg_free(ctl->rx_packets[i]);
 
 
-	if (ctl->frame_pool)
-		dma_pool_destroy(ctl->frame_pool);
+	dma_pool_destroy(ctl->frame_pool);
 	kfree(ctl);
 }
 
@@ -682,9 +673,9 @@ void tb_ctl_free(struct tb_ctl *ctl)
 void tb_ctl_start(struct tb_ctl *ctl)
 {
 	int i;
-	tb_ctl_info(ctl, "control channel starting...\n");
-	ring_start(ctl->tx); /* is used to ack hotplug packets, start first */
-	ring_start(ctl->rx);
+	tb_ctl_dbg(ctl, "control channel starting...\n");
+	tb_ring_start(ctl->tx); /* is used to ack hotplug packets, start first */
+	tb_ring_start(ctl->rx);
 	for (i = 0; i < TB_CTL_RX_PKG_COUNT; i++)
 		tb_ctl_rx_submit(ctl->rx_packets[i]);
 
@@ -705,31 +696,38 @@ void tb_ctl_stop(struct tb_ctl *ctl)
 	ctl->running = false;
 	mutex_unlock(&ctl->request_queue_lock);
 
-	ring_stop(ctl->rx);
-	ring_stop(ctl->tx);
+	tb_ring_stop(ctl->rx);
+	tb_ring_stop(ctl->tx);
 
 	if (!list_empty(&ctl->request_queue))
 		tb_ctl_WARN(ctl, "dangling request in request_queue\n");
 	INIT_LIST_HEAD(&ctl->request_queue);
-	tb_ctl_info(ctl, "control channel stopped\n");
+	tb_ctl_dbg(ctl, "control channel stopped\n");
 }
 
 /* public interface, commands */
 
 /**
- * tb_cfg_error() - send error packet
+ * tb_cfg_ack_plug() - Ack hot plug/unplug event
+ * @ctl: Control channel to use
+ * @route: Router that originated the event
+ * @port: Port where the hot plug/unplug happened
+ * @unplug: Ack hot plug or unplug
  *
- * Return: Returns 0 on success or an error code on failure.
+ * Call this as response for hot plug/unplug event to ack it.
+ * Returns %0 on success or an error code on failure.
  */
-int tb_cfg_error(struct tb_ctl *ctl, u64 route, u32 port,
-		 enum tb_cfg_error error)
+int tb_cfg_ack_plug(struct tb_ctl *ctl, u64 route, u32 port, bool unplug)
 {
 	struct cfg_error_pkg pkg = {
 		.header = tb_cfg_make_header(route),
 		.port = port,
-		.error = error,
+		.error = TB_CFG_ERROR_ACK_PLUG_EVENT,
+		.pg = unplug ? TB_CFG_ERROR_PG_HOT_UNPLUG
+			     : TB_CFG_ERROR_PG_HOT_PLUG,
 	};
-	tb_ctl_info(ctl, "resetting error on %llx:%x.\n", route, port);
+	tb_ctl_dbg(ctl, "acking hot %splug event on %llx:%x\n",
+		   unplug ? "un" : "", route, port);
 	return tb_ctl_tx(ctl, &pkg, sizeof(pkg), TB_CFG_PKG_ERROR);
 }
 
@@ -804,7 +802,7 @@ struct tb_cfg_result tb_cfg_reset(struct tb_ctl *ctl, u64 route,
 	req->request_type = TB_CFG_PKG_RESET;
 	req->response = &reply;
 	req->response_size = sizeof(reply);
-	req->response_type = sizeof(TB_CFG_PKG_RESET);
+	req->response_type = TB_CFG_PKG_RESET;
 
 	res = tb_cfg_request_sync(ctl, req, timeout_msec);
 
@@ -939,6 +937,23 @@ struct tb_cfg_result tb_cfg_write_raw(struct tb_ctl *ctl, const void *buffer,
 	return res;
 }
 
+static int tb_cfg_get_error(struct tb_ctl *ctl, enum tb_cfg_space space,
+			    const struct tb_cfg_result *res)
+{
+	/*
+	 * For unimplemented ports access to port config space may return
+	 * TB_CFG_ERROR_INVALID_CONFIG_SPACE (alternatively their type is
+	 * set to TB_TYPE_INACTIVE). In the former case return -ENODEV so
+	 * that the caller can mark the port as disabled.
+	 */
+	if (space == TB_CFG_PORT &&
+	    res->tb_error == TB_CFG_ERROR_INVALID_CONFIG_SPACE)
+		return -ENODEV;
+
+	tb_cfg_print_error(ctl, res);
+	return -EIO;
+}
+
 int tb_cfg_read(struct tb_ctl *ctl, void *buffer, u64 route, u32 port,
 		enum tb_cfg_space space, u32 offset, u32 length)
 {
@@ -951,12 +966,11 @@ int tb_cfg_read(struct tb_ctl *ctl, void *buffer, u64 route, u32 port,
 
 	case 1:
 		/* Thunderbolt error, tb_error holds the actual number */
-		tb_cfg_print_error(ctl, &res);
-		return -EIO;
+		return tb_cfg_get_error(ctl, space, &res);
 
 	case -ETIMEDOUT:
-		tb_ctl_warn(ctl, "timeout reading config space %u from %#x\n",
-			    space, offset);
+		tb_ctl_warn(ctl, "%llx: timeout reading config space %u from %#x\n",
+			    route, space, offset);
 		break;
 
 	default:
@@ -978,12 +992,11 @@ int tb_cfg_write(struct tb_ctl *ctl, const void *buffer, u64 route, u32 port,
 
 	case 1:
 		/* Thunderbolt error, tb_error holds the actual number */
-		tb_cfg_print_error(ctl, &res);
-		return -EIO;
+		return tb_cfg_get_error(ctl, space, &res);
 
 	case -ETIMEDOUT:
-		tb_ctl_warn(ctl, "timeout writing config space %u to %#x\n",
-			    space, offset);
+		tb_ctl_warn(ctl, "%llx: timeout writing config space %u to %#x\n",
+			    route, space, offset);
 		break;
 
 	default:

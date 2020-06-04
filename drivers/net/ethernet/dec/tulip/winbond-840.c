@@ -47,9 +47,6 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #define DRV_NAME	"winbond-840"
-#define DRV_VERSION	"1.01-e"
-#define DRV_RELDATE	"Sep-11-2006"
-
 
 /* Automatically extracted configuration info:
 probe-func: winbond840_probe
@@ -139,16 +136,9 @@ static int full_duplex[MAX_UNITS] = {-1, -1, -1, -1, -1, -1, -1, -1};
 #undef PKT_BUF_SZ			/* tulip.h also defines this */
 #define PKT_BUF_SZ		1536	/* Size of each temporary Rx buffer.*/
 
-/* These identify the driver base version and may not be removed. */
-static const char version[] __initconst =
-	"v" DRV_VERSION " (2.4 port) "
-	DRV_RELDATE "  Donald Becker <becker@scyld.com>\n"
-	"  http://www.scyld.com/network/drivers.html\n";
-
 MODULE_AUTHOR("Donald Becker <becker@scyld.com>");
 MODULE_DESCRIPTION("Winbond W89c840 Ethernet driver");
 MODULE_LICENSE("GPL");
-MODULE_VERSION(DRV_VERSION);
 
 module_param(max_interrupt_work, int, 0);
 module_param(debug, int, 0);
@@ -327,11 +317,11 @@ static int  mdio_read(struct net_device *dev, int phy_id, int location);
 static void mdio_write(struct net_device *dev, int phy_id, int location, int value);
 static int  netdev_open(struct net_device *dev);
 static int  update_link(struct net_device *dev);
-static void netdev_timer(unsigned long data);
+static void netdev_timer(struct timer_list *t);
 static void init_rxtx_rings(struct net_device *dev);
 static void free_rxtx_rings(struct netdev_private *np);
 static void init_registers(struct net_device *dev);
-static void tx_timeout(struct net_device *dev);
+static void tx_timeout(struct net_device *dev, unsigned int txqueue);
 static int alloc_ringdesc(struct net_device *dev);
 static void free_ringdesc(struct netdev_private *np);
 static netdev_tx_t start_tx(struct sk_buff *skb, struct net_device *dev);
@@ -655,10 +645,8 @@ static int netdev_open(struct net_device *dev)
 		netdev_dbg(dev, "Done netdev_open()\n");
 
 	/* Set the timer to check for link beat. */
-	init_timer(&np->timer);
+	timer_setup(&np->timer, netdev_timer, 0);
 	np->timer.expires = jiffies + 1*HZ;
-	np->timer.data = (unsigned long)dev;
-	np->timer.function = netdev_timer;				/* timer handler */
 	add_timer(&np->timer);
 	return 0;
 out_err:
@@ -774,10 +762,10 @@ static inline void update_csr6(struct net_device *dev, int new)
 		np->mii_if.full_duplex = 1;
 }
 
-static void netdev_timer(unsigned long data)
+static void netdev_timer(struct timer_list *t)
 {
-	struct net_device *dev = (struct net_device *)data;
-	struct netdev_private *np = netdev_priv(dev);
+	struct netdev_private *np = from_timer(np, t, timer);
+	struct net_device *dev = pci_get_drvdata(np->pci_dev);
 	void __iomem *ioaddr = np->base_addr;
 
 	if (debug > 2)
@@ -923,7 +911,7 @@ static void init_registers(struct net_device *dev)
 	iowrite32(0, ioaddr + RxStartDemand);
 }
 
-static void tx_timeout(struct net_device *dev)
+static void tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	struct netdev_private *np = netdev_priv(dev);
 	void __iomem *ioaddr = np->base_addr;
@@ -1387,7 +1375,6 @@ static void netdev_get_drvinfo (struct net_device *dev, struct ethtool_drvinfo *
 	struct netdev_private *np = netdev_priv(dev);
 
 	strlcpy(info->driver, DRV_NAME, sizeof(info->driver));
-	strlcpy(info->version, DRV_VERSION, sizeof(info->version));
 	strlcpy(info->bus_info, pci_name(np->pci_dev), sizeof(info->bus_info));
 }
 
@@ -1652,7 +1639,6 @@ static struct pci_driver w840_driver = {
 
 static int __init w840_init(void)
 {
-	printk(version);
 	return pci_register_driver(&w840_driver);
 }
 

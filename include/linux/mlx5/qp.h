@@ -37,7 +37,8 @@
 #include <linux/mlx5/driver.h>
 
 #define MLX5_INVALID_LKEY	0x100
-#define MLX5_SIG_WQE_SIZE	(MLX5_SEND_WQE_BB * 5)
+/* UMR (3 WQE_BB's) + SIG (3 WQE_BB's) + PSV (mem) + PSV (wire) */
+#define MLX5_SIG_WQE_SIZE	(MLX5_SEND_WQE_BB * 8)
 #define MLX5_DIF_SIZE		8
 #define MLX5_STRIDE_BLOCK_OP	0x400
 #define MLX5_CPY_GRD_MASK	0xc0
@@ -70,6 +71,7 @@ enum mlx5_qp_optpar {
 	MLX5_QP_OPTPAR_CQN_RCV			= 1 << 19,
 	MLX5_QP_OPTPAR_DC_HS			= 1 << 20,
 	MLX5_QP_OPTPAR_DC_KEY			= 1 << 21,
+	MLX5_QP_OPTPAR_COUNTER_SET_ID		= 1 << 25,
 };
 
 enum mlx5_qp_state {
@@ -202,7 +204,12 @@ struct mlx5_wqe_ctrl_seg {
 	u8			signature;
 	u8			rsvd[2];
 	u8			fm_ce_se;
-	__be32			imm;
+	union {
+		__be32		general_id;
+		__be32		imm;
+		__be32		umr_mkey;
+		__be32		tisn;
+	};
 };
 
 #define MLX5_WQE_CTRL_DS_MASK 0x3f
@@ -221,6 +228,12 @@ enum {
 };
 
 enum {
+	MLX5_ETH_WQE_SVLAN              = 1 << 0,
+	MLX5_ETH_WQE_TRAILER_HDR_OUTER_IP_ASSOC = 1 << 26,
+	MLX5_ETH_WQE_TRAILER_HDR_OUTER_L4_ASSOC = 1 << 27,
+	MLX5_ETH_WQE_TRAILER_HDR_INNER_IP_ASSOC = 3 << 26,
+	MLX5_ETH_WQE_TRAILER_HDR_INNER_L4_ASSOC = 1 << 28,
+	MLX5_ETH_WQE_INSERT_TRAILER     = 1 << 30,
 	MLX5_ETH_WQE_INSERT_VLAN        = 1 << 15,
 };
 
@@ -249,6 +262,7 @@ struct mlx5_wqe_eth_seg {
 			__be16 type;
 			__be16 vlan_tci;
 		} insert;
+		__be32 trailer;
 	};
 };
 
@@ -394,6 +408,7 @@ struct mlx5_wqe_signature_seg {
 
 struct mlx5_wqe_inline_seg {
 	__be32	byte_count;
+	__be32	data[];
 };
 
 enum mlx5_sig_type {
@@ -470,6 +485,12 @@ struct mlx5_core_qp {
 	int			qpn;
 	struct mlx5_rsc_debug	*dbg;
 	int			pid;
+	u16			uid;
+};
+
+struct mlx5_core_dct {
+	struct mlx5_core_qp	mqp;
+	struct completion	drained;
 };
 
 struct mlx5_qp_path {
@@ -538,46 +559,8 @@ struct mlx5_qp_context {
 	u8			rsvd1[24];
 };
 
-static inline struct mlx5_core_qp *__mlx5_qp_lookup(struct mlx5_core_dev *dev, u32 qpn)
-{
-	return radix_tree_lookup(&dev->priv.qp_table.tree, qpn);
-}
-
-static inline struct mlx5_core_mkey *__mlx5_mr_lookup(struct mlx5_core_dev *dev, u32 key)
-{
-	return radix_tree_lookup(&dev->priv.mkey_table.tree, key);
-}
-
-int mlx5_core_create_qp(struct mlx5_core_dev *dev,
-			struct mlx5_core_qp *qp,
-			u32 *in,
-			int inlen);
-int mlx5_core_qp_modify(struct mlx5_core_dev *dev, u16 opcode,
-			u32 opt_param_mask, void *qpc,
-			struct mlx5_core_qp *qp);
-int mlx5_core_destroy_qp(struct mlx5_core_dev *dev,
-			 struct mlx5_core_qp *qp);
-int mlx5_core_qp_query(struct mlx5_core_dev *dev, struct mlx5_core_qp *qp,
-		       u32 *out, int outlen);
-
-int mlx5_core_xrcd_alloc(struct mlx5_core_dev *dev, u32 *xrcdn);
-int mlx5_core_xrcd_dealloc(struct mlx5_core_dev *dev, u32 xrcdn);
-void mlx5_init_qp_table(struct mlx5_core_dev *dev);
-void mlx5_cleanup_qp_table(struct mlx5_core_dev *dev);
 int mlx5_debug_qp_add(struct mlx5_core_dev *dev, struct mlx5_core_qp *qp);
 void mlx5_debug_qp_remove(struct mlx5_core_dev *dev, struct mlx5_core_qp *qp);
-int mlx5_core_create_rq_tracked(struct mlx5_core_dev *dev, u32 *in, int inlen,
-				struct mlx5_core_qp *rq);
-void mlx5_core_destroy_rq_tracked(struct mlx5_core_dev *dev,
-				  struct mlx5_core_qp *rq);
-int mlx5_core_create_sq_tracked(struct mlx5_core_dev *dev, u32 *in, int inlen,
-				struct mlx5_core_qp *sq);
-void mlx5_core_destroy_sq_tracked(struct mlx5_core_dev *dev,
-				  struct mlx5_core_qp *sq);
-int mlx5_core_alloc_q_counter(struct mlx5_core_dev *dev, u16 *counter_id);
-int mlx5_core_dealloc_q_counter(struct mlx5_core_dev *dev, u16 counter_id);
-int mlx5_core_query_q_counter(struct mlx5_core_dev *dev, u16 counter_id,
-			      int reset, void *out, int out_size);
 
 static inline const char *mlx5_qp_type_str(int type)
 {

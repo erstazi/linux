@@ -73,10 +73,6 @@
 #define URB_ASYNC_UNLINK 0
 #endif
 
-/* 802.2 LLC/SNAP header used for Ethernet encapsulation over 802.11 */
-static const u8 encaps_hdr[] = {0xaa, 0xaa, 0x03, 0x00, 0x00, 0x00};
-#define ENCAPS_OVERHEAD		(sizeof(encaps_hdr) + 2)
-
 struct header_struct {
 	/* 802.3 */
 	u8 dest[ETH_ALEN];
@@ -206,11 +202,11 @@ struct ezusb_packet {
 	__le16 crc;		/* CRC up to here */
 	__le16 hermes_len;
 	__le16 hermes_rid;
-	u8 data[0];
+	u8 data[];
 } __packed;
 
 /* Table of devices that work or may work with this driver */
-static struct usb_device_id ezusb_table[] = {
+static const struct usb_device_id ezusb_table[] = {
 	{USB_DEVICE(USB_COMPAQ_VENDOR_ID, USB_COMPAQ_WL215_ID)},
 	{USB_DEVICE(USB_COMPAQ_VENDOR_ID, USB_HP_WL215_ID)},
 	{USB_DEVICE(USB_COMPAQ_VENDOR_ID, USB_COMPAQ_W200_ID)},
@@ -319,9 +315,9 @@ static inline void ezusb_mod_timer(struct ezusb_priv *upriv,
 	mod_timer(timer, expire);
 }
 
-static void ezusb_request_timerfn(u_long _ctx)
+static void ezusb_request_timerfn(struct timer_list *t)
 {
-	struct request_context *ctx = (void *) _ctx;
+	struct request_context *ctx = from_timer(ctx, t, timer);
 
 	ctx->outurb->transfer_flags |= URB_ASYNC_UNLINK;
 	if (usb_unlink_urb(ctx->outurb) == -EINPROGRESS) {
@@ -365,19 +361,8 @@ static struct request_context *ezusb_alloc_ctx(struct ezusb_priv *upriv,
 	refcount_set(&ctx->refcount, 1);
 	init_completion(&ctx->done);
 
-	setup_timer(&ctx->timer, ezusb_request_timerfn, (u_long)ctx);
+	timer_setup(&ctx->timer, ezusb_request_timerfn, 0);
 	return ctx;
-}
-
-
-/* Hopefully the real complete_all will soon be exported, in the mean
- * while this should work. */
-static inline void ezusb_complete_all(struct completion *comp)
-{
-	complete(comp);
-	complete(comp);
-	complete(comp);
-	complete(comp);
 }
 
 static void ezusb_ctx_complete(struct request_context *ctx)
@@ -413,7 +398,7 @@ static void ezusb_ctx_complete(struct request_context *ctx)
 
 			netif_wake_queue(dev);
 		}
-		ezusb_complete_all(&ctx->done);
+		complete_all(&ctx->done);
 		ezusb_request_context_put(ctx);
 		break;
 
@@ -423,7 +408,7 @@ static void ezusb_ctx_complete(struct request_context *ctx)
 			/* This is normal, as all request contexts get flushed
 			 * when the device is disconnected */
 			err("Called, CTX not terminating, but device gone");
-			ezusb_complete_all(&ctx->done);
+			complete_all(&ctx->done);
 			ezusb_request_context_put(ctx);
 			break;
 		}
@@ -694,11 +679,11 @@ static void ezusb_req_ctx_wait(struct ezusb_priv *upriv,
 			 * get the chance to run themselves. So we make sure
 			 * that we don't sleep for ever */
 			int msecs = DEF_TIMEOUT * (1000 / HZ);
-			while (!ctx->done.done && msecs--)
+
+			while (!try_wait_for_completion(&ctx->done) && msecs--)
 				udelay(1000);
 		} else {
-			wait_event_interruptible(ctx->done.wait,
-						 ctx->done.done);
+			wait_for_completion(&ctx->done);
 		}
 		break;
 	default:
@@ -912,10 +897,11 @@ static int ezusb_access_ltv(struct ezusb_priv *upriv,
 	case EZUSB_CTX_REQ_SUBMITTED:
 		if (!ctx->in_rid)
 			break;
+		/* fall through */
 	default:
 		err("%s: Unexpected context state %d", __func__,
 		    state);
-		/* fall though */
+		/* fall through */
 	case EZUSB_CTX_REQ_TIMEOUT:
 	case EZUSB_CTX_REQ_FAILED:
 	case EZUSB_CTX_RESP_TIMEOUT:
@@ -1364,7 +1350,8 @@ static int ezusb_init(struct hermes *hw)
 	int retval;
 
 	BUG_ON(in_interrupt());
-	BUG_ON(!upriv);
+	if (!upriv)
+		return -EINVAL;
 
 	upriv->reply_count = 0;
 	/* Write the MAGIC number on the simulated registers to keep
@@ -1457,7 +1444,6 @@ static void ezusb_bulk_in_callback(struct urb *urb)
 
 static inline void ezusb_delete(struct ezusb_priv *upriv)
 {
-	struct net_device *dev;
 	struct list_head *item;
 	struct list_head *tmp_item;
 	unsigned long flags;
@@ -1465,7 +1451,6 @@ static inline void ezusb_delete(struct ezusb_priv *upriv)
 	BUG_ON(in_interrupt());
 	BUG_ON(!upriv);
 
-	dev = upriv->dev;
 	mutex_lock(&upriv->mtx);
 
 	upriv->udev = NULL;	/* No timer will be rearmed from here */
@@ -1613,9 +1598,9 @@ static int ezusb_probe(struct usb_interface *interface,
 	/* set up the endpoint information */
 	/* check out the endpoints */
 
-	iface_desc = &interface->altsetting[0].desc;
+	iface_desc = &interface->cur_altsetting->desc;
 	for (i = 0; i < iface_desc->bNumEndpoints; ++i) {
-		ep = &interface->altsetting[0].endpoint[i].desc;
+		ep = &interface->cur_altsetting->endpoint[i].desc;
 
 		if (usb_endpoint_is_bulk_in(ep)) {
 			/* we found a bulk in endpoint */

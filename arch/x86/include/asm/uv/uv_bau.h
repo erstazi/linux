@@ -48,7 +48,6 @@
 #define UV2_NET_ENDPOINT_INTD		0x28
 #define UV_NET_ENDPOINT_INTD		(is_uv1_hub() ?			\
 			UV1_NET_ENDPOINT_INTD : UV2_NET_ENDPOINT_INTD)
-#define UV_DESC_PSHIFT			49
 #define UV_PAYLOADQ_GNODE_SHIFT		49
 #define UV_PTC_BASENAME			"sgi_uv/ptc_statistics"
 #define UV_BAU_BASENAME			"sgi_uv/bau_tunables"
@@ -858,5 +857,7 @@ static inline int atomic_inc_unless_ge(spinlock_t *lock, atomic_t *v, int u)
 	spin_unlock(lock);
 	return 1;
 }
+
+void uv_bau_message_interrupt(struct pt_regs *regs);
 
 #endif /* _ASM_X86_UV_UV_BAU_H */

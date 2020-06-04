@@ -1,10 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2011-12 Synopsys, Inc. (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #include <linux/interrupt.h>
@@ -27,7 +23,7 @@
  */
 void arc_init_IRQ(void)
 {
-	int level_mask = 0, i;
+	unsigned int level_mask = 0, i;
 
        /* Is timer high priority Interrupt (Level2 in ARCompact jargon) */
 	level_mask |= IS_ENABLED(CONFIG_ARC_COMPACT_IRQ_LEVELS) << TIMER0_IRQ;

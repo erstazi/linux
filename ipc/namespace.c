@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/ipc/namespace.c
  * Copyright (C) 2006 Pavel Emelyanov <xemul@openvz.org> OpenVZ, SWsoft Inc.
@@ -41,7 +42,7 @@ static struct ipc_namespace *create_ipc_ns(struct user_namespace *user_ns,
 		goto fail;
 
 	err = -ENOMEM;
-	ns = kmalloc(sizeof(struct ipc_namespace), GFP_KERNEL);
+	ns = kzalloc(sizeof(struct ipc_namespace), GFP_KERNEL);
 	if (ns == NULL)
 		goto fail_dec;
 
@@ -50,7 +51,7 @@ static struct ipc_namespace *create_ipc_ns(struct user_namespace *user_ns,
 		goto fail_free;
 	ns->ns.ops = &ipcns_operations;
 
-	atomic_set(&ns->count, 1);
+	refcount_set(&ns->count, 1);
 	ns->user_ns = get_user_ns(user_ns);
 	ns->ucounts = ucounts;
 
@@ -144,7 +145,7 @@ static void free_ipc_ns(struct ipc_namespace *ns)
  */
 void put_ipc_ns(struct ipc_namespace *ns)
 {
-	if (atomic_dec_and_lock(&ns->count, &mq_lock)) {
+	if (refcount_dec_and_lock(&ns->count, &mq_lock)) {
 		mq_clear_sbinfo(ns);
 		spin_unlock(&mq_lock);
 		mq_put_mnt(ns);
@@ -176,15 +177,14 @@ static void ipcns_put(struct ns_common *ns)
 	return put_ipc_ns(to_ipc_ns(ns));
 }
 
-static int ipcns_install(struct nsproxy *nsproxy, struct ns_common *new)
+static int ipcns_install(struct nsset *nsset, struct ns_common *new)
 {
+	struct nsproxy *nsproxy = nsset->nsproxy;
 	struct ipc_namespace *ns = to_ipc_ns(new);
 	if (!ns_capable(ns->user_ns, CAP_SYS_ADMIN) ||
-	    !ns_capable(current_user_ns(), CAP_SYS_ADMIN))
+	    !ns_capable(nsset->cred->user_ns, CAP_SYS_ADMIN))
 		return -EPERM;
 
-	/* Ditch state from the old ipc namespace */
-	exit_sem(current);
 	put_ipc_ns(nsproxy->ipc_ns);
 	nsproxy->ipc_ns = get_ipc_ns(ns);
 	return 0;

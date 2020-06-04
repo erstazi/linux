@@ -1,19 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /* speakup_keyhelp.c
  * help module for speakup
  *
  *written by David Borowski.
  *
  *  Copyright (C) 2003  David Borowski.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
  */
 
 #include <linux/keyboard.h>
@@ -58,7 +49,7 @@ static int cur_item, nstates;
 static void build_key_data(void)
 {
 	u_char *kp, counters[MAXFUNCS], ch, ch1;
-	u_short *p_key = key_data, key;
+	u_short *p_key, key;
 	int i, offset = 1;
 
 	nstates = (int)(state_tbl[-1]);

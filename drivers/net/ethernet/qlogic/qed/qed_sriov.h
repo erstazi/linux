@@ -32,6 +32,7 @@
 
 #ifndef _QED_SRIOV_H
 #define _QED_SRIOV_H
+#include <linux/crash_dump.h>
 #include <linux/types.h>
 #include "qed_vf.h"
 
@@ -40,9 +41,12 @@
 #define QED_VF_ARRAY_LENGTH (3)
 
 #ifdef CONFIG_QED_SRIOV
-#define IS_VF(cdev)             ((cdev)->b_is_vf)
-#define IS_PF(cdev)             (!((cdev)->b_is_vf))
-#define IS_PF_SRIOV(p_hwfn)     (!!((p_hwfn)->cdev->p_iov_info))
+#define IS_VF(cdev)             (is_kdump_kernel() ? \
+				 (0) : ((cdev)->b_is_vf))
+#define IS_PF(cdev)             (is_kdump_kernel() ? \
+				 (1) : !((cdev)->b_is_vf))
+#define IS_PF_SRIOV(p_hwfn)     (is_kdump_kernel() ? \
+				 (0) : !!((p_hwfn)->cdev->p_iov_info))
 #else
 #define IS_VF(cdev)             (0)
 #define IS_PF(cdev)             (1)
@@ -217,6 +221,9 @@ struct qed_vf_info {
 	u8 num_rxqs;
 	u8 num_txqs;
 
+	u16 rx_coal;
+	u16 tx_coal;
+
 	u8 num_sbs;
 
 	u8 num_mac_filters;
@@ -271,6 +278,23 @@ enum qed_iov_wq_flag {
 
 #ifdef CONFIG_QED_SRIOV
 /**
+ * @brief Check if given VF ID @vfid is valid
+ *        w.r.t. @b_enabled_only value
+ *        if b_enabled_only = true - only enabled VF id is valid
+ *        else any VF id less than max_vfs is valid
+ *
+ * @param p_hwfn
+ * @param rel_vf_id - Relative VF ID
+ * @param b_enabled_only - consider only enabled VF
+ * @param b_non_malicious - true iff we want to validate vf isn't malicious.
+ *
+ * @return bool - true for valid VF ID
+ */
+bool qed_iov_is_valid_vfid(struct qed_hwfn *p_hwfn,
+			   int rel_vf_id,
+			   bool b_enabled_only, bool b_non_malicious);
+
+/**
  * @brief - Given a VF index, return index of next [including that] active VF.
  *
  * @param p_hwfn
@@ -285,7 +309,7 @@ void qed_iov_bulletin_set_udp_ports(struct qed_hwfn *p_hwfn,
 
 /**
  * @brief Read sriov related information and allocated resources
- *  reads from configuraiton space, shmem, etc.
+ *  reads from configuration space, shmem, etc.
  *
  * @param p_hwfn
  *
@@ -373,6 +397,13 @@ void qed_vf_start_iov_wq(struct qed_dev *cdev);
 int qed_sriov_disable(struct qed_dev *cdev, bool pci_enabled);
 void qed_inform_vf_link_state(struct qed_hwfn *hwfn);
 #else
+static inline bool
+qed_iov_is_valid_vfid(struct qed_hwfn *p_hwfn,
+		      int rel_vf_id, bool b_enabled_only, bool b_non_malicious)
+{
+	return false;
+}
+
 static inline u16 qed_iov_get_next_active_vf(struct qed_hwfn *p_hwfn,
 					     u16 rel_vf_id)
 {

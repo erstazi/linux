@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* binfmt_elf_fdpic.c: FDPIC ELF binary format
  *
  * Copyright (C) 2003, 2004, 2006 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
  * Derived from binfmt_elf.c
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 #include <linux/module.h>
@@ -145,6 +141,7 @@ static int elf_fdpic_fetch_phdrs(struct elf_fdpic_params *params,
 	struct elf32_phdr *phdr;
 	unsigned long size;
 	int retval, loop;
+	loff_t pos = params->hdr.e_phoff;
 
 	if (params->hdr.e_phentsize != sizeof(struct elf_phdr))
 		return -ENOMEM;
@@ -156,8 +153,7 @@ static int elf_fdpic_fetch_phdrs(struct elf_fdpic_params *params,
 	if (!params->phdrs)
 		return -ENOMEM;
 
-	retval = kernel_read(file, params->hdr.e_phoff,
-			     (char *) params->phdrs, size);
+	retval = kernel_read(file, params->phdrs, size, &pos);
 	if (unlikely(retval != size))
 		return retval < 0 ? retval : -ENOEXEC;
 
@@ -199,6 +195,7 @@ static int load_elf_fdpic_binary(struct linux_binprm *bprm)
 	char *interpreter_name = NULL;
 	int executable_stack;
 	int retval, i;
+	loff_t pos;
 
 	kdebug("____ LOAD %d ____", current->pid);
 
@@ -246,10 +243,9 @@ static int load_elf_fdpic_binary(struct linux_binprm *bprm)
 			if (!interpreter_name)
 				goto error;
 
-			retval = kernel_read(bprm->file,
-					     phdr->p_offset,
-					     interpreter_name,
-					     phdr->p_filesz);
+			pos = phdr->p_offset;
+			retval = kernel_read(bprm->file, interpreter_name,
+					     phdr->p_filesz, &pos);
 			if (unlikely(retval != phdr->p_filesz)) {
 				if (retval >= 0)
 					retval = -ENOEXEC;
@@ -277,8 +273,9 @@ static int load_elf_fdpic_binary(struct linux_binprm *bprm)
 			 */
 			would_dump(bprm, interpreter);
 
-			retval = kernel_read(interpreter, 0, bprm->buf,
-					     BINPRM_BUF_SIZE);
+			pos = 0;
+			retval = kernel_read(interpreter, bprm->buf,
+					BINPRM_BUF_SIZE, &pos);
 			if (unlikely(retval != BINPRM_BUF_SIZE)) {
 				if (retval >= 0)
 					retval = -ENOEXEC;
@@ -377,6 +374,11 @@ static int load_elf_fdpic_binary(struct linux_binprm *bprm)
 				 executable_stack);
 	if (retval < 0)
 		goto error;
+#ifdef ARCH_HAS_SETUP_ADDITIONAL_PAGES
+	retval = arch_setup_additional_pages(bprm, !!interpreter_name);
+	if (retval < 0)
+		goto error;
+#endif
 #endif
 
 	/* load the executable and interpreter into memory */
@@ -457,6 +459,7 @@ static int load_elf_fdpic_binary(struct linux_binprm *bprm)
 			    dynaddr);
 #endif
 
+	finalize_exec(bprm);
 	/* everything is now ready... get the userspace context ready to roll */
 	entryaddr = interp_params.entry_addr ?: exec_params.entry_addr;
 	start_thread(regs, entryaddr, current->mm->start_stack);
@@ -650,7 +653,7 @@ static int create_elf_fdpic_tables(struct linux_binprm *bprm,
 	NEW_AUX_ENT(AT_EUID,	(elf_addr_t) from_kuid_munged(cred->user_ns, cred->euid));
 	NEW_AUX_ENT(AT_GID,	(elf_addr_t) from_kgid_munged(cred->user_ns, cred->gid));
 	NEW_AUX_ENT(AT_EGID,	(elf_addr_t) from_kgid_munged(cred->user_ns, cred->egid));
-	NEW_AUX_ENT(AT_SECURE,	security_bprm_secureexec(bprm));
+	NEW_AUX_ENT(AT_SECURE,	bprm->secureexec);
 	NEW_AUX_ENT(AT_EXECFN,	bprm->exec);
 
 #ifdef ARCH_DLINFO
@@ -830,6 +833,9 @@ static int elf_fdpic_map_file(struct elf_fdpic_params *params,
 			if (phdr->p_vaddr >= seg->p_vaddr &&
 			    phdr->p_vaddr + phdr->p_memsz <=
 			    seg->p_vaddr + seg->p_memsz) {
+				Elf32_Dyn __user *dyn;
+				Elf32_Sword d_tag;
+
 				params->dynamic_addr =
 					(phdr->p_vaddr - seg->p_vaddr) +
 					seg->addr;
@@ -842,8 +848,9 @@ static int elf_fdpic_map_file(struct elf_fdpic_params *params,
 					goto dynamic_error;
 
 				tmp = phdr->p_memsz / sizeof(Elf32_Dyn);
-				if (((Elf32_Dyn *)
-				     params->dynamic_addr)[tmp - 1].d_tag != 0)
+				dyn = (Elf32_Dyn __user *)params->dynamic_addr;
+				__get_user(d_tag, &dyn[tmp - 1].d_tag);
+				if (d_tag != 0)
 					goto dynamic_error;
 				break;
 			}
@@ -1352,17 +1359,17 @@ static void fill_prstatus(struct elf_prstatus *prstatus,
 		 * group-wide total, not its individual thread total.
 		 */
 		thread_group_cputime(p, &cputime);
-		prstatus->pr_utime = ns_to_timeval(cputime.utime);
-		prstatus->pr_stime = ns_to_timeval(cputime.stime);
+		prstatus->pr_utime = ns_to_kernel_old_timeval(cputime.utime);
+		prstatus->pr_stime = ns_to_kernel_old_timeval(cputime.stime);
 	} else {
 		u64 utime, stime;
 
 		task_cputime(p, &utime, &stime);
-		prstatus->pr_utime = ns_to_timeval(utime);
-		prstatus->pr_stime = ns_to_timeval(stime);
+		prstatus->pr_utime = ns_to_kernel_old_timeval(utime);
+		prstatus->pr_stime = ns_to_kernel_old_timeval(stime);
 	}
-	prstatus->pr_cutime = ns_to_timeval(p->signal->cutime);
-	prstatus->pr_cstime = ns_to_timeval(p->signal->cstime);
+	prstatus->pr_cutime = ns_to_kernel_old_timeval(p->signal->cutime);
+	prstatus->pr_cstime = ns_to_kernel_old_timeval(p->signal->cstime);
 
 	prstatus->pr_exec_fdpic_loadmap = p->mm->context.exec_fdpic_loadmap;
 	prstatus->pr_interp_fdpic_loadmap = p->mm->context.interp_fdpic_loadmap;
@@ -1488,7 +1495,9 @@ static bool elf_fdpic_dump_segments(struct coredump_params *cprm)
 	struct vm_area_struct *vma;
 
 	for (vma = current->mm->mmap; vma; vma = vma->vm_next) {
+#ifdef CONFIG_MMU
 		unsigned long addr;
+#endif
 
 		if (!maydump(vma, cprm->mm_flags))
 			continue;
@@ -1540,7 +1549,6 @@ static int elf_fdpic_core_dump(struct coredump_params *cprm)
 {
 #define	NUM_NOTES	6
 	int has_dumped = 0;
-	mm_segment_t fs;
 	int segs;
 	int i;
 	struct vm_area_struct *vma;
@@ -1580,30 +1588,31 @@ static int elf_fdpic_core_dump(struct coredump_params *cprm)
 	/* alloc memory for large data structures: too large to be on stack */
 	elf = kmalloc(sizeof(*elf), GFP_KERNEL);
 	if (!elf)
-		goto cleanup;
+		goto end_coredump;
 	prstatus = kzalloc(sizeof(*prstatus), GFP_KERNEL);
 	if (!prstatus)
-		goto cleanup;
+		goto end_coredump;
 	psinfo = kmalloc(sizeof(*psinfo), GFP_KERNEL);
 	if (!psinfo)
-		goto cleanup;
-	notes = kmalloc(NUM_NOTES * sizeof(struct memelfnote), GFP_KERNEL);
+		goto end_coredump;
+	notes = kmalloc_array(NUM_NOTES, sizeof(struct memelfnote),
+			      GFP_KERNEL);
 	if (!notes)
-		goto cleanup;
+		goto end_coredump;
 	fpu = kmalloc(sizeof(*fpu), GFP_KERNEL);
 	if (!fpu)
-		goto cleanup;
+		goto end_coredump;
 #ifdef ELF_CORE_COPY_XFPREGS
 	xfpu = kmalloc(sizeof(*xfpu), GFP_KERNEL);
 	if (!xfpu)
-		goto cleanup;
+		goto end_coredump;
 #endif
 
 	for (ct = current->mm->core_state->dumper.next;
 					ct; ct = ct->next) {
 		tmp = kzalloc(sizeof(*tmp), GFP_KERNEL);
 		if (!tmp)
-			goto cleanup;
+			goto end_coredump;
 
 		tmp->thread = ct->task;
 		list_add(&tmp->list, &thread_list);
@@ -1667,9 +1676,6 @@ static int elf_fdpic_core_dump(struct coredump_params *cprm)
 		fill_note(notes + numnote++,
 			  "LINUX", ELF_CORE_XFPREG_TYPE, sizeof(*xfpu), xfpu);
 #endif
-
-	fs = get_fs();
-	set_fs(KERNEL_DS);
 
 	offset += sizeof(*elf);				/* Elf header */
 	offset += segs * sizeof(struct elf_phdr);	/* Program headers */
@@ -1778,9 +1784,6 @@ static int elf_fdpic_core_dump(struct coredump_params *cprm)
 	}
 
 end_coredump:
-	set_fs(fs);
-
-cleanup:
 	while (!list_empty(&thread_list)) {
 		struct list_head *tmp = thread_list.next;
 		list_del(tmp);

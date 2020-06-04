@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Syncookies implementation for the Linux kernel
  *
  *  Copyright (C) 1997 Andi Kleen
  *  Based on ideas by D.J.Bernstein and Eric Schenk.
- *
- *	This program is free software; you can redistribute it and/or
- *      modify it under the terms of the GNU General Public License
- *      as published by the Free Software Foundation; either version
- *      2 of the License, or (at your option) any later version.
  */
 
 #include <linux/tcp.h>
@@ -66,10 +62,10 @@ static u32 cookie_hash(__be32 saddr, __be32 daddr, __be16 sport, __be16 dport,
  * Since subsequent timestamps use the normal tcp_time_stamp value, we
  * must make sure that the resulting initial timestamp is <= tcp_time_stamp.
  */
-u64 cookie_init_timestamp(struct request_sock *req)
+u64 cookie_init_timestamp(struct request_sock *req, u64 now)
 {
 	struct inet_request_sock *ireq;
-	u32 ts, ts_now = tcp_time_stamp_raw();
+	u32 ts, ts_now = tcp_ns_to_ts(now);
 	u32 options = 0;
 
 	ireq = inet_rsk(req);
@@ -88,7 +84,7 @@ u64 cookie_init_timestamp(struct request_sock *req)
 		ts <<= TSBITS;
 		ts |= options;
 	}
-	return (u64)ts * (USEC_PER_SEC / TCP_TS_HZ);
+	return (u64)ts * (NSEC_PER_SEC / TCP_TS_HZ);
 }
 
 
@@ -216,11 +212,15 @@ struct sock *tcp_get_cookie_sock(struct sock *sk, struct sk_buff *skb,
 		refcount_set(&req->rsk_refcnt, 1);
 		tcp_sk(child)->tsoffset = tsoff;
 		sock_rps_save_rxhash(child, skb);
-		inet_csk_reqsk_queue_add(sk, req, child);
-	} else {
-		reqsk_free(req);
+		if (inet_csk_reqsk_queue_add(sk, req, child))
+			return child;
+
+		bh_unlock_sock(child);
+		sock_put(child);
 	}
-	return child;
+	__reqsk_free(req);
+
+	return NULL;
 }
 EXPORT_SYMBOL(tcp_get_cookie_sock);
 
@@ -350,12 +350,18 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb)
 	treq->snt_synack	= 0;
 	treq->tfo_listener	= false;
 
+	if (IS_ENABLED(CONFIG_MPTCP))
+		treq->is_mptcp = 0;
+
+	if (IS_ENABLED(CONFIG_SMC))
+		ireq->smc_ok = 0;
+
 	ireq->ir_iif = inet_request_bound_dev_if(sk, skb);
 
 	/* We throwed the options of the initial SYN away, so we hope
 	 * the ACK carries the same options again (see RFC1122 4.2.3.8)
 	 */
-	ireq->opt = tcp_v4_save_options(skb);
+	RCU_INIT_POINTER(ireq->ireq_opt, tcp_v4_save_options(sock_net(sk), skb));
 
 	if (security_inet_conn_request(sk, skb, req)) {
 		reqsk_free(req);
@@ -385,7 +391,7 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb)
 	/* Try to redo what tcp_v4_send_synack did. */
 	req->rsk_window_clamp = tp->window_clamp ? :dst_metric(&rt->dst, RTAX_WINDOW);
 
-	tcp_select_initial_window(tcp_full_space(sk), req->mss,
+	tcp_select_initial_window(sk, tcp_full_space(sk), req->mss,
 				  &req->rsk_rcv_wnd, &req->rsk_window_clamp,
 				  ireq->wscale_ok, &rcv_wscale,
 				  dst_metric(&rt->dst, RTAX_INITRWND));

@@ -54,9 +54,6 @@
 
 #include <rdma/ib_verbs.h>
 
-/* VNIC uses 16B header format */
-#define OPA_VNIC_L2_TYPE    0x2
-
 /* 16 header bytes + 2 reserved bytes */
 #define OPA_VNIC_L2_HDR_LEN   (16 + 2)
 
@@ -78,7 +75,7 @@
 struct opa_vnic_rdma_netdev {
 	struct rdma_netdev rn;  /* keep this first */
 	/* followed by device private data */
-	char *dev_priv[0];
+	char *dev_priv[];
 };
 
 static inline void *opa_vnic_priv(const struct net_device *dev)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * lib/locking-selftest.c
  *
@@ -28,7 +29,7 @@
  */
 static unsigned int debug_locks_verbose;
 
-static DEFINE_WW_CLASS(ww_lockdep);
+static DEFINE_WD_CLASS(ww_lockdep);
 
 static int __init setup_debug_locks_verbose(char *str)
 {
@@ -360,6 +361,103 @@ static void rsem_AA3(void)
 {
 	WSL(X1);
 	RSL(X2); // this one should fail
+}
+
+/*
+ * read_lock(A)
+ * spin_lock(B)
+ *		spin_lock(B)
+ *		write_lock(A)
+ */
+static void rlock_ABBA1(void)
+{
+	RL(X1);
+	L(Y1);
+	U(Y1);
+	RU(X1);
+
+	L(Y1);
+	WL(X1);
+	WU(X1);
+	U(Y1); // should fail
+}
+
+static void rwsem_ABBA1(void)
+{
+	RSL(X1);
+	ML(Y1);
+	MU(Y1);
+	RSU(X1);
+
+	ML(Y1);
+	WSL(X1);
+	WSU(X1);
+	MU(Y1); // should fail
+}
+
+/*
+ * read_lock(A)
+ * spin_lock(B)
+ *		spin_lock(B)
+ *		read_lock(A)
+ */
+static void rlock_ABBA2(void)
+{
+	RL(X1);
+	L(Y1);
+	U(Y1);
+	RU(X1);
+
+	L(Y1);
+	RL(X1);
+	RU(X1);
+	U(Y1); // should NOT fail
+}
+
+static void rwsem_ABBA2(void)
+{
+	RSL(X1);
+	ML(Y1);
+	MU(Y1);
+	RSU(X1);
+
+	ML(Y1);
+	RSL(X1);
+	RSU(X1);
+	MU(Y1); // should fail
+}
+
+
+/*
+ * write_lock(A)
+ * spin_lock(B)
+ *		spin_lock(B)
+ *		write_lock(A)
+ */
+static void rlock_ABBA3(void)
+{
+	WL(X1);
+	L(Y1);
+	U(Y1);
+	WU(X1);
+
+	L(Y1);
+	WL(X1);
+	WU(X1);
+	U(Y1); // should fail
+}
+
+static void rwsem_ABBA3(void)
+{
+	WSL(X1);
+	ML(Y1);
+	MU(Y1);
+	WSU(X1);
+
+	ML(Y1);
+	WSL(X1);
+	WSU(X1);
+	MU(Y1); // should fail
 }
 
 /*
@@ -1056,8 +1154,6 @@ static void dotest(void (*testcase_fn)(void), int expected, int lockclass_mask)
 	if (debug_locks != expected) {
 		unexpected_testcase_failures++;
 		pr_cont("FAILED|");
-
-		dump_stack();
 	} else {
 		testcase_successes++;
 		pr_cont("  ok  |");
@@ -1379,7 +1475,7 @@ static void ww_test_edeadlk_normal(void)
 
 	mutex_lock(&o2.base);
 	o2.ctx = &t2;
-	mutex_release(&o2.base.dep_map, 1, _THIS_IP_);
+	mutex_release(&o2.base.dep_map, _THIS_IP_);
 
 	WWAI(&t);
 	t2 = t;
@@ -1404,7 +1500,7 @@ static void ww_test_edeadlk_normal_slow(void)
 	int ret;
 
 	mutex_lock(&o2.base);
-	mutex_release(&o2.base.dep_map, 1, _THIS_IP_);
+	mutex_release(&o2.base.dep_map, _THIS_IP_);
 	o2.ctx = &t2;
 
 	WWAI(&t);
@@ -1431,7 +1527,7 @@ static void ww_test_edeadlk_no_unlock(void)
 
 	mutex_lock(&o2.base);
 	o2.ctx = &t2;
-	mutex_release(&o2.base.dep_map, 1, _THIS_IP_);
+	mutex_release(&o2.base.dep_map, _THIS_IP_);
 
 	WWAI(&t);
 	t2 = t;
@@ -1455,7 +1551,7 @@ static void ww_test_edeadlk_no_unlock_slow(void)
 	int ret;
 
 	mutex_lock(&o2.base);
-	mutex_release(&o2.base.dep_map, 1, _THIS_IP_);
+	mutex_release(&o2.base.dep_map, _THIS_IP_);
 	o2.ctx = &t2;
 
 	WWAI(&t);
@@ -1480,7 +1576,7 @@ static void ww_test_edeadlk_acquire_more(void)
 	int ret;
 
 	mutex_lock(&o2.base);
-	mutex_release(&o2.base.dep_map, 1, _THIS_IP_);
+	mutex_release(&o2.base.dep_map, _THIS_IP_);
 	o2.ctx = &t2;
 
 	WWAI(&t);
@@ -1501,7 +1597,7 @@ static void ww_test_edeadlk_acquire_more_slow(void)
 	int ret;
 
 	mutex_lock(&o2.base);
-	mutex_release(&o2.base.dep_map, 1, _THIS_IP_);
+	mutex_release(&o2.base.dep_map, _THIS_IP_);
 	o2.ctx = &t2;
 
 	WWAI(&t);
@@ -1522,11 +1618,11 @@ static void ww_test_edeadlk_acquire_more_edeadlk(void)
 	int ret;
 
 	mutex_lock(&o2.base);
-	mutex_release(&o2.base.dep_map, 1, _THIS_IP_);
+	mutex_release(&o2.base.dep_map, _THIS_IP_);
 	o2.ctx = &t2;
 
 	mutex_lock(&o3.base);
-	mutex_release(&o3.base.dep_map, 1, _THIS_IP_);
+	mutex_release(&o3.base.dep_map, _THIS_IP_);
 	o3.ctx = &t2;
 
 	WWAI(&t);
@@ -1548,11 +1644,11 @@ static void ww_test_edeadlk_acquire_more_edeadlk_slow(void)
 	int ret;
 
 	mutex_lock(&o2.base);
-	mutex_release(&o2.base.dep_map, 1, _THIS_IP_);
+	mutex_release(&o2.base.dep_map, _THIS_IP_);
 	o2.ctx = &t2;
 
 	mutex_lock(&o3.base);
-	mutex_release(&o3.base.dep_map, 1, _THIS_IP_);
+	mutex_release(&o3.base.dep_map, _THIS_IP_);
 	o3.ctx = &t2;
 
 	WWAI(&t);
@@ -1573,7 +1669,7 @@ static void ww_test_edeadlk_acquire_wrong(void)
 	int ret;
 
 	mutex_lock(&o2.base);
-	mutex_release(&o2.base.dep_map, 1, _THIS_IP_);
+	mutex_release(&o2.base.dep_map, _THIS_IP_);
 	o2.ctx = &t2;
 
 	WWAI(&t);
@@ -1598,7 +1694,7 @@ static void ww_test_edeadlk_acquire_wrong_slow(void)
 	int ret;
 
 	mutex_lock(&o2.base);
-	mutex_release(&o2.base.dep_map, 1, _THIS_IP_);
+	mutex_release(&o2.base.dep_map, _THIS_IP_);
 	o2.ctx = &t2;
 
 	WWAI(&t);
@@ -1893,6 +1989,7 @@ void locking_selftest(void)
 
 	init_shared_classes();
 	debug_locks_silent = !debug_locks_verbose;
+	lockdep_set_selftest_task(current);
 
 	DO_TESTCASE_6R("A-A deadlock", AA);
 	DO_TESTCASE_6R("A-B-B-A deadlock", ABBA);
@@ -1932,6 +2029,32 @@ void locking_selftest(void)
 	pr_cont("             |");
 	dotest(rsem_AA3, FAILURE, LOCKTYPE_RWSEM);
 	pr_cont("\n");
+
+	print_testname("mixed read-lock/lock-write ABBA");
+	pr_cont("             |");
+	dotest(rlock_ABBA1, FAILURE, LOCKTYPE_RWLOCK);
+#ifdef CONFIG_PROVE_LOCKING
+	/*
+	 * Lockdep does indeed fail here, but there's nothing we can do about
+	 * that now.  Don't kill lockdep for it.
+	 */
+	unexpected_testcase_failures--;
+#endif
+
+	pr_cont("             |");
+	dotest(rwsem_ABBA1, FAILURE, LOCKTYPE_RWSEM);
+
+	print_testname("mixed read-lock/lock-read ABBA");
+	pr_cont("             |");
+	dotest(rlock_ABBA2, SUCCESS, LOCKTYPE_RWLOCK);
+	pr_cont("             |");
+	dotest(rwsem_ABBA2, FAILURE, LOCKTYPE_RWSEM);
+
+	print_testname("mixed write-lock/lock-write ABBA");
+	pr_cont("             |");
+	dotest(rlock_ABBA3, FAILURE, LOCKTYPE_RWLOCK);
+	pr_cont("             |");
+	dotest(rwsem_ABBA3, FAILURE, LOCKTYPE_RWSEM);
 
 	printk("  --------------------------------------------------------------------------\n");
 
@@ -1975,5 +2098,6 @@ void locking_selftest(void)
 		printk("---------------------------------\n");
 		debug_locks = 1;
 	}
+	lockdep_set_selftest_task(NULL);
 	debug_locks_silent = 0;
 }

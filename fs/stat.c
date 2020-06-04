@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/stat.c
  *
@@ -19,6 +20,9 @@
 
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
+
+#include "internal.h"
+#include "mount.h"
 
 /**
  * generic_fillattr - Fill in the basic attributes from the inode struct
@@ -44,11 +48,6 @@ void generic_fillattr(struct inode *inode, struct kstat *stat)
 	stat->ctime = inode->i_ctime;
 	stat->blksize = i_blocksize(inode);
 	stat->blocks = inode->i_blocks;
-
-	if (IS_NOATIME(inode))
-		stat->result_mask &= ~STATX_ATIME;
-	if (IS_AUTOMOUNT(inode))
-		stat->attributes |= STATX_ATTR_AUTOMOUNT;
 }
 EXPORT_SYMBOL(generic_fillattr);
 
@@ -72,8 +71,18 @@ int vfs_getattr_nosec(const struct path *path, struct kstat *stat,
 
 	memset(stat, 0, sizeof(*stat));
 	stat->result_mask |= STATX_BASIC_STATS;
-	request_mask &= STATX_ALL;
 	query_flags &= KSTAT_QUERY_FLAGS;
+
+	/* allow the fs to override these if it really wants to */
+	/* SB_NOATIME means filesystem supplies dummy atime value */
+	if (inode->i_sb->s_flags & SB_NOATIME)
+		stat->result_mask &= ~STATX_ATIME;
+	if (IS_AUTOMOUNT(inode))
+		stat->attributes |= STATX_ATTR_AUTOMOUNT;
+
+	if (IS_DAX(inode))
+		stat->attributes |= STATX_ATTR_DAX;
+
 	if (inode->i_op->getattr)
 		return inode->i_op->getattr(path, stat, request_mask,
 					    query_flags);
@@ -147,6 +156,24 @@ int vfs_statx_fd(unsigned int fd, struct kstat *stat,
 }
 EXPORT_SYMBOL(vfs_statx_fd);
 
+static inline unsigned vfs_stat_set_lookup_flags(unsigned *lookup_flags,
+						 int flags)
+{
+	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
+		       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)
+		return -EINVAL;
+
+	*lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
+	if (flags & AT_SYMLINK_NOFOLLOW)
+		*lookup_flags &= ~LOOKUP_FOLLOW;
+	if (flags & AT_NO_AUTOMOUNT)
+		*lookup_flags &= ~LOOKUP_AUTOMOUNT;
+	if (flags & AT_EMPTY_PATH)
+		*lookup_flags |= LOOKUP_EMPTY;
+
+	return 0;
+}
+
 /**
  * vfs_statx - Get basic and extra attributes by filename
  * @dfd: A file descriptor representing the base dir for a relative filename
@@ -167,25 +194,21 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
 {
 	struct path path;
 	int error = -EINVAL;
-	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
+	unsigned lookup_flags;
 
-	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
-		       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)
+	if (vfs_stat_set_lookup_flags(&lookup_flags, flags))
 		return -EINVAL;
-
-	if (flags & AT_SYMLINK_NOFOLLOW)
-		lookup_flags &= ~LOOKUP_FOLLOW;
-	if (flags & AT_NO_AUTOMOUNT)
-		lookup_flags &= ~LOOKUP_AUTOMOUNT;
-	if (flags & AT_EMPTY_PATH)
-		lookup_flags |= LOOKUP_EMPTY;
-
 retry:
 	error = user_path_at(dfd, filename, lookup_flags, &path);
 	if (error)
 		goto out;
 
 	error = vfs_getattr(&path, stat, request_mask, flags);
+	stat->mnt_id = real_mount(path.mnt)->mnt_id;
+	stat->result_mask |= STATX_MNT_ID;
+	if (path.mnt->mnt_root == path.dentry)
+		stat->attributes |= STATX_ATTR_MOUNT_ROOT;
+	stat->attributes_mask |= STATX_ATTR_MOUNT_ROOT;
 	path_put(&path);
 	if (retry_estale(error, lookup_flags)) {
 		lookup_flags |= LOOKUP_REVAL;
@@ -278,6 +301,8 @@ SYSCALL_DEFINE2(fstat, unsigned int, fd, struct __old_kernel_stat __user *, stat
 }
 
 #endif /* __ARCH_WANT_OLD_STAT */
+
+#ifdef __ARCH_WANT_NEW_STAT
 
 #if BITS_PER_LONG == 32
 #  define choose_32_64(a,b) a
@@ -377,9 +402,10 @@ SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
 
 	return error;
 }
+#endif
 
-SYSCALL_DEFINE4(readlinkat, int, dfd, const char __user *, pathname,
-		char __user *, buf, int, bufsiz)
+static int do_readlinkat(int dfd, const char __user *pathname,
+			 char __user *buf, int bufsiz)
 {
 	struct path path;
 	int error;
@@ -414,10 +440,16 @@ retry:
 	return error;
 }
 
+SYSCALL_DEFINE4(readlinkat, int, dfd, const char __user *, pathname,
+		char __user *, buf, int, bufsiz)
+{
+	return do_readlinkat(dfd, pathname, buf, bufsiz);
+}
+
 SYSCALL_DEFINE3(readlink, const char __user *, path, char __user *, buf,
 		int, bufsiz)
 {
-	return sys_readlinkat(AT_FDCWD, path, buf, bufsiz);
+	return do_readlinkat(AT_FDCWD, path, buf, bufsiz);
 }
 
 
@@ -541,8 +573,27 @@ cp_statx(const struct kstat *stat, struct statx __user *buffer)
 	tmp.stx_rdev_minor = MINOR(stat->rdev);
 	tmp.stx_dev_major = MAJOR(stat->dev);
 	tmp.stx_dev_minor = MINOR(stat->dev);
+	tmp.stx_mnt_id = stat->mnt_id;
 
 	return copy_to_user(buffer, &tmp, sizeof(tmp)) ? -EFAULT : 0;
+}
+
+int do_statx(int dfd, const char __user *filename, unsigned flags,
+	     unsigned int mask, struct statx __user *buffer)
+{
+	struct kstat stat;
+	int error;
+
+	if (mask & STATX__RESERVED)
+		return -EINVAL;
+	if ((flags & AT_STATX_SYNC_TYPE) == AT_STATX_SYNC_TYPE)
+		return -EINVAL;
+
+	error = vfs_statx(dfd, filename, flags, &stat, mask);
+	if (error)
+		return error;
+
+	return cp_statx(&stat, buffer);
 }
 
 /**
@@ -561,19 +612,7 @@ SYSCALL_DEFINE5(statx,
 		unsigned int, mask,
 		struct statx __user *, buffer)
 {
-	struct kstat stat;
-	int error;
-
-	if (mask & STATX__RESERVED)
-		return -EINVAL;
-	if ((flags & AT_STATX_SYNC_TYPE) == AT_STATX_SYNC_TYPE)
-		return -EINVAL;
-
-	error = vfs_statx(dfd, filename, flags, &stat, mask);
-	if (error)
-		return error;
-
-	return cp_statx(&stat, buffer);
+	return do_statx(dfd, filename, flags, mask, buffer);
 }
 
 #ifdef CONFIG_COMPAT
@@ -710,7 +749,7 @@ loff_t inode_get_bytes(struct inode *inode)
 	loff_t ret;
 
 	spin_lock(&inode->i_lock);
-	ret = (((loff_t)inode->i_blocks) << 9) + inode->i_bytes;
+	ret = __inode_get_bytes(inode);
 	spin_unlock(&inode->i_lock);
 	return ret;
 }

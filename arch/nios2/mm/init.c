@@ -23,7 +23,7 @@
 #include <linux/mm.h>
 #include <linux/init.h>
 #include <linux/pagemap.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/slab.h>
 #include <linux/binfmts.h>
 
@@ -46,17 +46,15 @@ pgd_t *pgd_current;
  */
 void __init paging_init(void)
 {
-	unsigned long zones_size[MAX_NR_ZONES];
-
-	memset(zones_size, 0, sizeof(zones_size));
+	unsigned long max_zone_pfn[MAX_NR_ZONES] = { 0 };
 
 	pagetable_init();
 	pgd_current = swapper_pg_dir;
 
-	zones_size[ZONE_NORMAL] = max_mapnr;
+	max_zone_pfn[ZONE_NORMAL] = max_mapnr;
 
 	/* pass the memory from the bootmem allocator to the main allocator */
-	free_area_init(zones_size);
+	free_area_init(max_zone_pfn);
 
 	flush_dcache_range((unsigned long)empty_zero_page,
 			(unsigned long)empty_zero_page + PAGE_SIZE);
@@ -73,25 +71,13 @@ void __init mem_init(void)
 	high_memory = __va(end_mem);
 
 	/* this will put all memory onto the freelists */
-	free_all_bootmem();
+	memblock_free_all();
 	mem_init_print_info(NULL);
 }
 
 void __init mmu_init(void)
 {
 	flush_tlb_all();
-}
-
-#ifdef CONFIG_BLK_DEV_INITRD
-void __init free_initrd_mem(unsigned long start, unsigned long end)
-{
-	free_reserved_area((void *)start, (void *)end, -1, "initrd");
-}
-#endif
-
-void __ref free_initmem(void)
-{
-	free_initmem_default(-1);
 }
 
 #define __page_aligned(order) __aligned(PAGE_SIZE << (order))

@@ -1,6 +1,6 @@
+# SPDX-License-Identifier: GPL-2.0-only
 config INOTIFY_USER
 	bool "Inotify support for userspace"
-	select ANON_INODES
 	select FSNOTIFY
 	default y
 	---help---
@@ -12,6 +12,6 @@ config INOTIFY_USER
 	  new features including multiple file events, one-shot support, and
 	  unmount notification.
 
-	  For more information, see <file:Documentation/filesystems/inotify.txt>
+	  For more information, see <file:Documentation/filesystems/inotify.rst>
 
 	  If unsure, say Y.
