@@ -2,7 +2,7 @@
 
 .. include:: ../disclaimer-zh_CN.rst
 
-:Original: :ref:`Documentation/filesystems/debugfs.txt <debugfs_index>`
+:Original: Documentation/filesystems/debugfs.rst
 
 =======
 Debugfs

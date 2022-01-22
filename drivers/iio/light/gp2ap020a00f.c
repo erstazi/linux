@@ -38,8 +38,8 @@
 #include <linux/irq.h>
 #include <linux/irq_work.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/mutex.h>
-#include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
@@ -1390,12 +1390,6 @@ static int gp2ap020a00f_buffer_postenable(struct iio_dev *indio_dev)
 
 	mutex_lock(&data->lock);
 
-	err = iio_triggered_buffer_postenable(indio_dev);
-	if (err < 0) {
-		mutex_unlock(&data->lock);
-		return err;
-	}
-
 	/*
 	 * Enable triggers according to the scan_mask. Enabling either
 	 * LIGHT_CLEAR or LIGHT_IR scan mode results in enabling ALS
@@ -1430,8 +1424,6 @@ static int gp2ap020a00f_buffer_postenable(struct iio_dev *indio_dev)
 		err = -ENOMEM;
 
 error_unlock:
-	if (err < 0)
-		iio_triggered_buffer_predisable(indio_dev);
 	mutex_unlock(&data->lock);
 
 	return err;
@@ -1465,8 +1457,6 @@ static int gp2ap020a00f_buffer_predisable(struct iio_dev *indio_dev)
 	if (err == 0)
 		kfree(data->buffer);
 
-	iio_triggered_buffer_predisable(indio_dev);
-
 	mutex_unlock(&data->lock);
 
 	return err;
@@ -1475,9 +1465,6 @@ static int gp2ap020a00f_buffer_predisable(struct iio_dev *indio_dev)
 static const struct iio_buffer_setup_ops gp2ap020a00f_buffer_setup_ops = {
 	.postenable = &gp2ap020a00f_buffer_postenable,
 	.predisable = &gp2ap020a00f_buffer_predisable,
-};
-
-static const struct iio_trigger_ops gp2ap020a00f_trigger_ops = {
 };
 
 static int gp2ap020a00f_probe(struct i2c_client *client,
@@ -1527,7 +1514,6 @@ static int gp2ap020a00f_probe(struct i2c_client *client,
 	init_waitqueue_head(&data->data_ready_queue);
 
 	mutex_init(&data->lock);
-	indio_dev->dev.parent = &client->dev;
 	indio_dev->channels = gp2ap020a00f_channels;
 	indio_dev->num_channels = ARRAY_SIZE(gp2ap020a00f_channels);
 	indio_dev->info = &gp2ap020a00f_info;
@@ -1560,9 +1546,6 @@ static int gp2ap020a00f_probe(struct i2c_client *client,
 		dev_err(&client->dev, "Irq request failed.\n");
 		goto error_uninit_buffer;
 	}
-
-	data->trig->ops = &gp2ap020a00f_trigger_ops;
-	data->trig->dev.parent = &data->client->dev;
 
 	init_irq_work(&data->work, gp2ap020a00f_iio_trigger_work);
 
@@ -1617,18 +1600,16 @@ static const struct i2c_device_id gp2ap020a00f_id[] = {
 
 MODULE_DEVICE_TABLE(i2c, gp2ap020a00f_id);
 
-#ifdef CONFIG_OF
 static const struct of_device_id gp2ap020a00f_of_match[] = {
 	{ .compatible = "sharp,gp2ap020a00f" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, gp2ap020a00f_of_match);
-#endif
 
 static struct i2c_driver gp2ap020a00f_driver = {
 	.driver = {
 		.name	= GP2A_I2C_NAME,
-		.of_match_table = of_match_ptr(gp2ap020a00f_of_match),
+		.of_match_table = gp2ap020a00f_of_match,
 	},
 	.probe		= gp2ap020a00f_probe,
 	.remove		= gp2ap020a00f_remove,

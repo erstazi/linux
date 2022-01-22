@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: (GPL-2.0 OR BSD-3-Clause)
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-3-Clause)
 //
 // This file is provided under a dual BSD/GPLv2 license.  When using or
 // redistributing this file, you may do so under either license.
@@ -353,7 +353,7 @@ void hda_dsp_ctrl_stop_chip(struct snd_sof_dev *sdev)
 	snd_hdac_bus_stop_cmd_io(bus);
 #endif
 	/* disable position buffer */
-	if (bus->posbuf.addr) {
+	if (bus->use_posbuf && bus->posbuf.addr) {
 		snd_sof_dsp_write(sdev, HDA_DSP_HDA_BAR,
 				  SOF_HDA_ADSP_DPLBASE, 0);
 		snd_sof_dsp_write(sdev, HDA_DSP_HDA_BAR,

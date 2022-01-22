@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-
-#include "vmlinux.h"
+#include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 
 struct {
@@ -10,7 +9,7 @@ struct {
 	__uint(max_entries, 4);
 } dm_ports SEC(".maps");
 
-SEC("xdp_redir")
+SEC("xdp")
 int xdp_redir_prog(struct xdp_md *ctx)
 {
 	return bpf_redirect_map(&dm_ports, 1, 0);
@@ -19,7 +18,7 @@ int xdp_redir_prog(struct xdp_md *ctx)
 /* invalid program on DEVMAP entry;
  * SEC name means expected attach type not set
  */
-SEC("xdp_dummy")
+SEC("xdp")
 int xdp_dummy_prog(struct xdp_md *ctx)
 {
 	return XDP_PASS;
@@ -28,7 +27,7 @@ int xdp_dummy_prog(struct xdp_md *ctx)
 /* valid program on DEVMAP entry via SEC name;
  * has access to egress and ingress ifindex
  */
-SEC("xdp_devmap")
+SEC("xdp_devmap/map_prog")
 int xdp_dummy_dm(struct xdp_md *ctx)
 {
 	char fmt[] = "devmap redirect: dev %u -> dev %u len %u\n";

@@ -3,13 +3,8 @@
 #define _BPF_NETNS_H
 
 #include <linux/mutex.h>
+#include <net/netns/bpf.h>
 #include <uapi/linux/bpf.h>
-
-enum netns_bpf_attach_type {
-	NETNS_BPF_INVALID = -1,
-	NETNS_BPF_FLOW_DISSECTOR = 0,
-	MAX_NETNS_BPF_ATTACH_TYPE
-};
 
 static inline enum netns_bpf_attach_type
 to_netns_bpf_attach_type(enum bpf_attach_type attach_type)
@@ -17,6 +12,8 @@ to_netns_bpf_attach_type(enum bpf_attach_type attach_type)
 	switch (attach_type) {
 	case BPF_FLOW_DISSECTOR:
 		return NETNS_BPF_FLOW_DISSECTOR;
+	case BPF_SK_LOOKUP:
+		return NETNS_BPF_SK_LOOKUP;
 	default:
 		return NETNS_BPF_INVALID;
 	}
@@ -33,7 +30,7 @@ int netns_bpf_prog_query(const union bpf_attr *attr,
 			 union bpf_attr __user *uattr);
 int netns_bpf_prog_attach(const union bpf_attr *attr,
 			  struct bpf_prog *prog);
-int netns_bpf_prog_detach(const union bpf_attr *attr);
+int netns_bpf_prog_detach(const union bpf_attr *attr, enum bpf_prog_type ptype);
 int netns_bpf_link_create(const union bpf_attr *attr,
 			  struct bpf_prog *prog);
 #else
@@ -49,7 +46,8 @@ static inline int netns_bpf_prog_attach(const union bpf_attr *attr,
 	return -EOPNOTSUPP;
 }
 
-static inline int netns_bpf_prog_detach(const union bpf_attr *attr)
+static inline int netns_bpf_prog_detach(const union bpf_attr *attr,
+					enum bpf_prog_type ptype)
 {
 	return -EOPNOTSUPP;
 }

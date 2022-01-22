@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Support for Medifield PNW Camera Imaging ISP subsystem.
  *
@@ -215,12 +216,12 @@ struct atomisp_sw_contex {
  * ci device struct
  */
 struct atomisp_device {
-	struct pci_dev *pdev;
 	struct device *dev;
 	struct v4l2_device v4l2_dev;
 	struct media_device media_dev;
 	struct atomisp_platform_data *pdata;
 	void *mmu_l1_base;
+	void __iomem *base;
 	const struct firmware *firmware;
 
 	struct pm_qos_request pm_qos;
@@ -245,6 +246,13 @@ struct atomisp_device {
 	/* Purpose of mutex is to protect and serialize use of isp data
 	 * structures and css API calls. */
 	struct rt_mutex mutex;
+	/*
+	 * This mutex ensures that we don't allow an open to succeed while
+	 * the initialization process is incomplete
+	 */
+	struct rt_mutex loading;
+	/* Set once the ISP is ready to allow opens */
+	bool ready;
 	/*
 	 * Serialise streamoff: mutex is dropped during streamoff to
 	 * cancel the watchdog queue. MUST be acquired BEFORE

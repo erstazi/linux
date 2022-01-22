@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
@@ -37,10 +38,9 @@ ia_css_iterator_config(
 	ia_css_resolution_to_sp_resolution(&to->dvs_envelope,  from->dvs_envelope);
 }
 
-enum ia_css_err
-ia_css_iterator_configure(
-    const struct ia_css_binary *binary,
-    const struct ia_css_frame_info *in_info) {
+int ia_css_iterator_configure(const struct ia_css_binary *binary,
+			      const struct ia_css_frame_info *in_info)
+{
 	struct ia_css_frame_info my_info = IA_CSS_BINARY_DEFAULT_FRAME_INFO;
 	struct ia_css_iterator_configuration config = default_config;
 
@@ -74,7 +74,5 @@ ia_css_iterator_configure(
 		my_info.res.height   <<= binary->vf_downscale_log2;
 	}
 
-	ia_css_configure_iterator(binary, &config);
-
-	return IA_CSS_SUCCESS;
+	return ia_css_configure_iterator(binary, &config);
 }

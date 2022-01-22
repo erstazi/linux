@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
@@ -120,8 +121,6 @@ struct ia_css_isp_parameters {
 	bool dvs2_coef_table_changed;
 	bool morph_table_changed;
 	bool sc_table_changed;
-	bool sc_table_dirty;
-	unsigned int sc_table_last_pipe_num;
 	bool anr_thres_changed;
 	/* ---- deprecated: replaced with pipe_dvs_6axis_config_changed ---- */
 	bool dvs_6axis_config_changed;
@@ -150,13 +149,13 @@ struct ia_css_isp_parameters {
 
 void
 ia_css_params_store_ia_css_host_data(
-    hrt_vaddress ddr_addr,
+    ia_css_ptr ddr_addr,
     struct ia_css_host_data *data);
 
-enum ia_css_err
+int
 ia_css_params_store_sctbl(
     const struct ia_css_pipeline_stage *stage,
-    hrt_vaddress ddr_addr,
+    ia_css_ptr ddr_addr,
     const struct ia_css_shading_table *shading_table);
 
 struct ia_css_host_data *
@@ -167,22 +166,16 @@ ia_css_params_alloc_convert_sctbl(
 struct ia_css_isp_config *
 sh_css_pipe_isp_config_get(struct ia_css_pipe *pipe);
 
-/* ipu address allocation/free for gdc lut */
-hrt_vaddress
-sh_css_params_alloc_gdc_lut(void);
-void
-sh_css_params_free_gdc_lut(hrt_vaddress addr);
-
-enum ia_css_err
+int
 sh_css_params_map_and_store_default_gdc_lut(void);
 
 void
 sh_css_params_free_default_gdc_lut(void);
 
-hrt_vaddress
+ia_css_ptr
 sh_css_params_get_default_gdc_lut(void);
 
-hrt_vaddress
+ia_css_ptr
 sh_css_pipe_get_pp_gdc_lut(const struct ia_css_pipe *pipe);
 
 #endif /* _SH_CSS_PARAMS_H_ */

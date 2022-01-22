@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
@@ -16,7 +17,7 @@
 #define __INPUT_SYSTEM_PUBLIC_H_INCLUDED__
 
 #include <type_support.h>
-#ifdef USE_INPUT_SYSTEM_VERSION_2401
+#ifdef ISP2401
 #include "isys_public.h"
 #else
 
@@ -250,11 +251,11 @@ STORAGE_CLASS_INPUT_SYSTEM_H hrt_data input_system_sub_system_reg_load(
 
 // Function that resets current configuration.
 // remove the argument since it should be private.
-input_system_error_t input_system_configuration_reset(void);
+input_system_err_t input_system_configuration_reset(void);
 
 // Function that commits current configuration.
 // remove the argument since it should be private.
-input_system_error_t input_system_configuration_commit(void);
+input_system_err_t input_system_configuration_commit(void);
 
 ///////////////////////////////////////////////////////////////////////////
 //
@@ -268,14 +269,14 @@ input_system_error_t input_system_configuration_commit(void);
 
 // FIFO channel config function user
 
-input_system_error_t	input_system_csi_fifo_channel_cfg(
+input_system_err_t	input_system_csi_fifo_channel_cfg(
     u32				ch_id,
     input_system_csi_port_t	port,
     backend_channel_cfg_t	backend_ch,
     target_cfg2400_t			target
 );
 
-input_system_error_t	input_system_csi_fifo_channel_with_counting_cfg(
+input_system_err_t	input_system_csi_fifo_channel_with_counting_cfg(
     u32				ch_id,
     u32				nof_frame,
     input_system_csi_port_t	port,
@@ -287,7 +288,7 @@ input_system_error_t	input_system_csi_fifo_channel_with_counting_cfg(
 
 // SRAM channel config function user
 
-input_system_error_t	input_system_csi_sram_channel_cfg(
+input_system_err_t	input_system_csi_sram_channel_cfg(
     u32				ch_id,
     input_system_csi_port_t	port,
     backend_channel_cfg_t	backend_ch,
@@ -298,7 +299,7 @@ input_system_error_t	input_system_csi_sram_channel_cfg(
 
 //XMEM channel config function user
 
-input_system_error_t	input_system_csi_xmem_channel_cfg(
+input_system_err_t	input_system_csi_xmem_channel_cfg(
     u32				ch_id,
     input_system_csi_port_t port,
     backend_channel_cfg_t	backend_ch,
@@ -310,7 +311,7 @@ input_system_error_t	input_system_csi_xmem_channel_cfg(
     uint32_t				nof_xmem_buffers
 );
 
-input_system_error_t	input_system_csi_xmem_capture_only_channel_cfg(
+input_system_err_t	input_system_csi_xmem_capture_only_channel_cfg(
     u32				ch_id,
     u32				nof_frames,
     input_system_csi_port_t port,
@@ -321,7 +322,7 @@ input_system_error_t	input_system_csi_xmem_capture_only_channel_cfg(
     target_cfg2400_t			target
 );
 
-input_system_error_t	input_system_csi_xmem_acquire_only_channel_cfg(
+input_system_err_t	input_system_csi_xmem_acquire_only_channel_cfg(
     u32				ch_id,
     u32				nof_frames,
     input_system_csi_port_t port,
@@ -333,7 +334,7 @@ input_system_error_t	input_system_csi_xmem_acquire_only_channel_cfg(
 
 // Non - CSI channel config function user
 
-input_system_error_t	input_system_prbs_channel_cfg(
+input_system_err_t	input_system_prbs_channel_cfg(
     u32		ch_id,
     u32		nof_frames,
     u32		seed,
@@ -344,7 +345,7 @@ input_system_error_t	input_system_prbs_channel_cfg(
     target_cfg2400_t	target
 );
 
-input_system_error_t	input_system_tpg_channel_cfg(
+input_system_err_t	input_system_tpg_channel_cfg(
     u32		ch_id,
     u32		nof_frames,//not used yet
     u32		x_mask,
@@ -359,11 +360,11 @@ input_system_error_t	input_system_tpg_channel_cfg(
     target_cfg2400_t	target
 );
 
-input_system_error_t	input_system_gpfifo_channel_cfg(
+input_system_err_t	input_system_gpfifo_channel_cfg(
     u32		ch_id,
     u32		nof_frames,
     target_cfg2400_t	target
 );
-#endif /* #ifdef USE_INPUT_SYSTEM_VERSION_2401 */
+#endif /* #ifdef ISP2401 */
 
 #endif /* __INPUT_SYSTEM_PUBLIC_H_INCLUDED__ */

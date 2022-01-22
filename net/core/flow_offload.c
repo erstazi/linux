@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 #include <linux/kernel.h>
 #include <linux/slab.h>
+#include <net/act_api.h>
 #include <net/flow_offload.h>
 #include <linux/rtnetlink.h>
 #include <linux/mutex.h>
+#include <linux/rhashtable.h>
 
 struct flow_rule *flow_rule_alloc(unsigned int num_actions)
 {
@@ -25,6 +27,26 @@ struct flow_rule *flow_rule_alloc(unsigned int num_actions)
 	return rule;
 }
 EXPORT_SYMBOL(flow_rule_alloc);
+
+struct flow_offload_action *offload_action_alloc(unsigned int num_actions)
+{
+	struct flow_offload_action *fl_action;
+	int i;
+
+	fl_action = kzalloc(struct_size(fl_action, action.entries, num_actions),
+			    GFP_KERNEL);
+	if (!fl_action)
+		return NULL;
+
+	fl_action->action.num_entries = num_actions;
+	/* Pre-fill each action hw_stats with DONT_CARE.
+	 * Caller can override this if it wants stats for a given action.
+	 */
+	for (i = 0; i < num_actions; i++)
+		fl_action->action.entries[i].hw_stats = FLOW_ACTION_HW_STATS_DONT_CARE;
+
+	return fl_action;
+}
 
 #define FLOW_DISSECTOR_MATCH(__rule, __type, __out)				\
 	const struct flow_match *__m = &(__rule)->match;			\
@@ -320,13 +342,13 @@ EXPORT_SYMBOL(flow_block_cb_setup_simple);
 static DEFINE_MUTEX(flow_indr_block_lock);
 static LIST_HEAD(flow_block_indr_list);
 static LIST_HEAD(flow_block_indr_dev_list);
+static LIST_HEAD(flow_indir_dev_list);
 
 struct flow_indr_dev {
 	struct list_head		list;
 	flow_indr_block_bind_cb_t	*cb;
 	void				*cb_priv;
 	refcount_t			refcnt;
-	struct rcu_head			rcu;
 };
 
 static struct flow_indr_dev *flow_indr_dev_alloc(flow_indr_block_bind_cb_t *cb,
@@ -343,6 +365,33 @@ static struct flow_indr_dev *flow_indr_dev_alloc(flow_indr_block_bind_cb_t *cb,
 	refcount_set(&indr_dev->refcnt, 1);
 
 	return indr_dev;
+}
+
+struct flow_indir_dev_info {
+	void *data;
+	struct net_device *dev;
+	struct Qdisc *sch;
+	enum tc_setup_type type;
+	void (*cleanup)(struct flow_block_cb *block_cb);
+	struct list_head list;
+	enum flow_block_command command;
+	enum flow_block_binder_type binder_type;
+	struct list_head *cb_list;
+};
+
+static void existing_qdiscs_register(flow_indr_block_bind_cb_t *cb, void *cb_priv)
+{
+	struct flow_block_offload bo;
+	struct flow_indir_dev_info *cur;
+
+	list_for_each_entry(cur, &flow_indir_dev_list, list) {
+		memset(&bo, 0, sizeof(bo));
+		bo.command = cur->command;
+		bo.binder_type = cur->binder_type;
+		INIT_LIST_HEAD(&bo.cb_list);
+		cb(cur->dev, cur->sch, cb_priv, cur->type, &bo, cur->data, cur->cleanup);
+		list_splice(&bo.cb_list, cur->cb_list);
+	}
 }
 
 int flow_indr_dev_register(flow_indr_block_bind_cb_t *cb, void *cb_priv)
@@ -366,23 +415,25 @@ int flow_indr_dev_register(flow_indr_block_bind_cb_t *cb, void *cb_priv)
 	}
 
 	list_add(&indr_dev->list, &flow_block_indr_dev_list);
+	existing_qdiscs_register(cb, cb_priv);
 	mutex_unlock(&flow_indr_block_lock);
+
+	tcf_action_reoffload_cb(cb, cb_priv, true);
 
 	return 0;
 }
 EXPORT_SYMBOL(flow_indr_dev_register);
 
-static void __flow_block_indr_cleanup(flow_setup_cb_t *setup_cb, void *cb_priv,
+static void __flow_block_indr_cleanup(void (*release)(void *cb_priv),
+				      void *cb_priv,
 				      struct list_head *cleanup_list)
 {
 	struct flow_block_cb *this, *next;
 
 	list_for_each_entry_safe(this, next, &flow_block_indr_list, indr.list) {
-		if (this->cb == setup_cb &&
-		    this->cb_priv == cb_priv) {
+		if (this->release == release &&
+		    this->indr.cb_priv == cb_priv)
 			list_move(&this->indr.list, cleanup_list);
-			return;
-		}
 	}
 }
 
@@ -397,7 +448,7 @@ static void flow_block_indr_notify(struct list_head *cleanup_list)
 }
 
 void flow_indr_dev_unregister(flow_indr_block_bind_cb_t *cb, void *cb_priv,
-			      flow_setup_cb_t *setup_cb)
+			      void (*release)(void *cb_priv))
 {
 	struct flow_indr_dev *this, *next, *indr_dev = NULL;
 	LIST_HEAD(cleanup_list);
@@ -418,9 +469,10 @@ void flow_indr_dev_unregister(flow_indr_block_bind_cb_t *cb, void *cb_priv,
 		return;
 	}
 
-	__flow_block_indr_cleanup(setup_cb, cb_priv, &cleanup_list);
+	__flow_block_indr_cleanup(release, cb_priv, &cleanup_list);
 	mutex_unlock(&flow_indr_block_lock);
 
+	tcf_action_reoffload_cb(cb, cb_priv, false);
 	flow_block_indr_notify(&cleanup_list);
 	kfree(indr_dev);
 }
@@ -428,48 +480,118 @@ EXPORT_SYMBOL(flow_indr_dev_unregister);
 
 static void flow_block_indr_init(struct flow_block_cb *flow_block,
 				 struct flow_block_offload *bo,
-				 struct net_device *dev, void *data,
+				 struct net_device *dev, struct Qdisc *sch, void *data,
+				 void *cb_priv,
 				 void (*cleanup)(struct flow_block_cb *block_cb))
 {
 	flow_block->indr.binder_type = bo->binder_type;
 	flow_block->indr.data = data;
+	flow_block->indr.cb_priv = cb_priv;
 	flow_block->indr.dev = dev;
+	flow_block->indr.sch = sch;
 	flow_block->indr.cleanup = cleanup;
 }
 
-static void __flow_block_indr_binding(struct flow_block_offload *bo,
-				      struct net_device *dev, void *data,
-				      void (*cleanup)(struct flow_block_cb *block_cb))
+struct flow_block_cb *flow_indr_block_cb_alloc(flow_setup_cb_t *cb,
+					       void *cb_ident, void *cb_priv,
+					       void (*release)(void *cb_priv),
+					       struct flow_block_offload *bo,
+					       struct net_device *dev,
+					       struct Qdisc *sch, void *data,
+					       void *indr_cb_priv,
+					       void (*cleanup)(struct flow_block_cb *block_cb))
 {
 	struct flow_block_cb *block_cb;
 
-	list_for_each_entry(block_cb, &bo->cb_list, list) {
-		switch (bo->command) {
-		case FLOW_BLOCK_BIND:
-			flow_block_indr_init(block_cb, bo, dev, data, cleanup);
-			list_add(&block_cb->indr.list, &flow_block_indr_list);
-			break;
-		case FLOW_BLOCK_UNBIND:
-			list_del(&block_cb->indr.list);
-			break;
-		}
+	block_cb = flow_block_cb_alloc(cb, cb_ident, cb_priv, release);
+	if (IS_ERR(block_cb))
+		goto out;
+
+	flow_block_indr_init(block_cb, bo, dev, sch, data, indr_cb_priv, cleanup);
+	list_add(&block_cb->indr.list, &flow_block_indr_list);
+
+out:
+	return block_cb;
+}
+EXPORT_SYMBOL(flow_indr_block_cb_alloc);
+
+static struct flow_indir_dev_info *find_indir_dev(void *data)
+{
+	struct flow_indir_dev_info *cur;
+
+	list_for_each_entry(cur, &flow_indir_dev_list, list) {
+		if (cur->data == data)
+			return cur;
 	}
+	return NULL;
 }
 
-int flow_indr_dev_setup_offload(struct net_device *dev,
+static int indir_dev_add(void *data, struct net_device *dev, struct Qdisc *sch,
+			 enum tc_setup_type type, void (*cleanup)(struct flow_block_cb *block_cb),
+			 struct flow_block_offload *bo)
+{
+	struct flow_indir_dev_info *info;
+
+	info = find_indir_dev(data);
+	if (info)
+		return -EEXIST;
+
+	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	if (!info)
+		return -ENOMEM;
+
+	info->data = data;
+	info->dev = dev;
+	info->sch = sch;
+	info->type = type;
+	info->cleanup = cleanup;
+	info->command = bo->command;
+	info->binder_type = bo->binder_type;
+	info->cb_list = bo->cb_list_head;
+
+	list_add(&info->list, &flow_indir_dev_list);
+	return 0;
+}
+
+static int indir_dev_remove(void *data)
+{
+	struct flow_indir_dev_info *info;
+
+	info = find_indir_dev(data);
+	if (!info)
+		return -ENOENT;
+
+	list_del(&info->list);
+
+	kfree(info);
+	return 0;
+}
+
+int flow_indr_dev_setup_offload(struct net_device *dev,	struct Qdisc *sch,
 				enum tc_setup_type type, void *data,
 				struct flow_block_offload *bo,
 				void (*cleanup)(struct flow_block_cb *block_cb))
 {
 	struct flow_indr_dev *this;
+	u32 count = 0;
+	int err;
 
 	mutex_lock(&flow_indr_block_lock);
-	list_for_each_entry(this, &flow_block_indr_dev_list, list)
-		this->cb(dev, this->cb_priv, type, bo);
+	if (bo) {
+		if (bo->command == FLOW_BLOCK_BIND)
+			indir_dev_add(data, dev, sch, type, cleanup, bo);
+		else if (bo->command == FLOW_BLOCK_UNBIND)
+			indir_dev_remove(data);
+	}
 
-	__flow_block_indr_binding(bo, dev, data, cleanup);
+	list_for_each_entry(this, &flow_block_indr_dev_list, list) {
+		err = this->cb(dev, sch, this->cb_priv, type, bo, data, cleanup);
+		if (!err)
+			count++;
+	}
+
 	mutex_unlock(&flow_indr_block_lock);
 
-	return list_empty(&bo->cb_list) ? -EOPNOTSUPP : 0;
+	return (bo && list_empty(&bo->cb_list)) ? -EOPNOTSUPP : count;
 }
 EXPORT_SYMBOL(flow_indr_dev_setup_offload);

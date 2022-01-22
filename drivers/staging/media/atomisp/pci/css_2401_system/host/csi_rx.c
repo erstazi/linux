@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
@@ -13,6 +14,7 @@
  */
 
 #include "system_global.h"
+#include "csi_rx_global.h"
 
 const u32 N_SHORT_PACKET_LUT_ENTRIES[N_CSI_RX_BACKEND_ID] = {
 	4,	/* 4 entries at CSI_RX_BACKEND0_ID*/

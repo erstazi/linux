@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
@@ -23,8 +24,8 @@
 /*
  * Duplicates "sync_generator_cfg_t" in "input_system_global.h".
  */
-typedef struct sync_generator_cfg_s sync_generator_cfg_t;
-struct sync_generator_cfg_s {
+typedef struct isp2401_sync_generator_cfg_s isp2401_sync_generator_cfg_t;
+struct isp2401_sync_generator_cfg_s {
 	u32	hblank_cycles;
 	u32	vblank_cycles;
 	u32	pixels_per_clock;
@@ -71,7 +72,7 @@ struct pixelgen_tpg_cfg_s {
 		s32	v_delta;	/* vertical delta? */
 	} delta_cfg;
 
-	sync_generator_cfg_t	 sync_gen_cfg;
+	isp2401_sync_generator_cfg_t	 sync_gen_cfg;
 };
 
 /*
@@ -83,7 +84,7 @@ struct pixelgen_prbs_cfg_s {
 	s32	seed0;
 	s32	seed1;
 
-	sync_generator_cfg_t	sync_gen_cfg;
+	isp2401_sync_generator_cfg_t	sync_gen_cfg;
 };
 
 /* end of Pixel-generator: TPG. ("pixelgen_global.h") */

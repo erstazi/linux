@@ -292,7 +292,7 @@ CPUMF_EVENT_ATTR(cf_z15, TX_C_TABORT_SPECIAL, 0x00f5);
 CPUMF_EVENT_ATTR(cf_z15, DFLT_ACCESS, 0x00f7);
 CPUMF_EVENT_ATTR(cf_z15, DFLT_CYCLES, 0x00fc);
 CPUMF_EVENT_ATTR(cf_z15, DFLT_CC, 0x00108);
-CPUMF_EVENT_ATTR(cf_z15, DFLT_CCERROR, 0x00109);
+CPUMF_EVENT_ATTR(cf_z15, DFLT_CCFINISH, 0x00109);
 CPUMF_EVENT_ATTR(cf_z15, MT_DIAG_CYCLES_ONE_THR_ACTIVE, 0x01c0);
 CPUMF_EVENT_ATTR(cf_z15, MT_DIAG_CYCLES_TWO_THR_ACTIVE, 0x01c1);
 
@@ -344,7 +344,7 @@ static struct attribute *cpumcf_svn_12345_pmu_event_attr[] __initdata = {
 	NULL,
 };
 
-static struct attribute *cpumcf_svn_6_pmu_event_attr[] __initdata = {
+static struct attribute *cpumcf_svn_67_pmu_event_attr[] __initdata = {
 	CPUMF_EVENT_PTR(cf_svn_12345, PRNG_FUNCTIONS),
 	CPUMF_EVENT_PTR(cf_svn_12345, PRNG_CYCLES),
 	CPUMF_EVENT_PTR(cf_svn_12345, PRNG_BLOCKED_FUNCTIONS),
@@ -629,7 +629,7 @@ static struct attribute *cpumcf_z15_pmu_event_attr[] __initdata = {
 	CPUMF_EVENT_PTR(cf_z15, DFLT_ACCESS),
 	CPUMF_EVENT_PTR(cf_z15, DFLT_CYCLES),
 	CPUMF_EVENT_PTR(cf_z15, DFLT_CC),
-	CPUMF_EVENT_PTR(cf_z15, DFLT_CCERROR),
+	CPUMF_EVENT_PTR(cf_z15, DFLT_CCFINISH),
 	CPUMF_EVENT_PTR(cf_z15, MT_DIAG_CYCLES_ONE_THR_ACTIVE),
 	CPUMF_EVENT_PTR(cf_z15, MT_DIAG_CYCLES_TWO_THR_ACTIVE),
 	NULL,
@@ -715,8 +715,8 @@ __init const struct attribute_group **cpumf_cf_event_group(void)
 	case 1 ... 5:
 		csvn = cpumcf_svn_12345_pmu_event_attr;
 		break;
-	case 6:
-		csvn = cpumcf_svn_6_pmu_event_attr;
+	case 6 ... 7:
+		csvn = cpumcf_svn_67_pmu_event_attr;
 		break;
 	default:
 		csvn = none;

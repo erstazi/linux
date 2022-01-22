@@ -10,6 +10,9 @@
 #define __ETHTOOL_LINK_MODE_MASK_NWORDS \
 	DIV_ROUND_UP(__ETHTOOL_LINK_MODE_MASK_NBITS, 32)
 
+#define ETHTOOL_PAUSE_STAT_CNT	(__ETHTOOL_A_PAUSE_STAT_CNT -		\
+				 ETHTOOL_A_PAUSE_STAT_TX_FRAMES)
+
 enum ethtool_multicast_groups {
 	ETHNL_MCGRP_MONITOR,
 };
@@ -67,5 +70,5 @@ static inline int ethnl_cable_test_step(struct phy_device *phydev, u32 first,
 {
 	return -EOPNOTSUPP;
 }
-#endif /* IS_ENABLED(ETHTOOL_NETLINK) */
+#endif /* IS_ENABLED(CONFIG_ETHTOOL_NETLINK) */
 #endif /* _LINUX_ETHTOOL_NETLINK_H_ */

@@ -22,8 +22,8 @@
 #include <linux/interrupt.h>
 #include <linux/fsl_devices.h>
 #include <linux/of_platform.h>
+#include <linux/pgtable.h>
 
-#include <asm/pgtable.h>
 #include <asm/page.h>
 #include <linux/atomic.h>
 #include <asm/time.h>
@@ -282,7 +282,7 @@ machine_device_initcall(mpc85xx_cds, mpc85xx_cds_8259_attach);
 
 #endif /* CONFIG_PPC_I8259 */
 
-static void mpc85xx_cds_pci_assign_primary(void)
+static void __init mpc85xx_cds_pci_assign_primary(void)
 {
 #ifdef CONFIG_PCI
 	struct device_node *np;

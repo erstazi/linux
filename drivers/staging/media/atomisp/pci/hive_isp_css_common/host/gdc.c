@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2010-2015, Intel Corporation.
@@ -26,10 +27,6 @@ static inline void gdc_reg_store(
     const gdc_ID_t		ID,
     const unsigned int	reg,
     const hrt_data		value);
-
-static inline hrt_data gdc_reg_load(
-    const gdc_ID_t		ID,
-    const unsigned int	reg);
 
 #ifndef __INLINE_GDC__
 #include "gdc_private.h"
@@ -115,11 +112,4 @@ static inline void gdc_reg_store(
 {
 	ia_css_device_store_uint32(GDC_BASE[ID] + reg * sizeof(hrt_data), value);
 	return;
-}
-
-static inline hrt_data gdc_reg_load(
-    const gdc_ID_t		ID,
-    const unsigned int	reg)
-{
-	return ia_css_device_load_uint32(GDC_BASE[ID] + reg * sizeof(hrt_data));
 }

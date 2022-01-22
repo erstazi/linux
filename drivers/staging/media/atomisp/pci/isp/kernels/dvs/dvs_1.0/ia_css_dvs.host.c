@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Support for Intel Camera Imaging ISP subsystem.
  * Copyright (c) 2015, Intel Corporation.
@@ -12,6 +13,8 @@
  * more details.
  */
 
+#include "hmm.h"
+
 #include "ia_css_frame_public.h"
 #define IA_CSS_INCLUDE_CONFIGURATIONS
 #include "ia_css_isp_configs.h"
@@ -22,7 +25,6 @@
 #include "sh_css_params.h"
 #include "ia_css_binary.h"
 #include "ia_css_debug.h"
-#include "memory_access.h"
 #include "assert_support.h"
 
 #include "ia_css_dvs.host.h"
@@ -44,16 +46,14 @@ ia_css_dvs_config(
 	    DVS_NUM_BLOCKS_Y(from->info->res.height);
 }
 
-void
-ia_css_dvs_configure(
-    const struct ia_css_binary     *binary,
-    const struct ia_css_frame_info *info)
+int ia_css_dvs_configure(const struct ia_css_binary     *binary,
+			 const struct ia_css_frame_info *info)
 {
 	struct ia_css_dvs_configuration config = default_config;
 
 	config.info = info;
 
-	ia_css_configure_dvs(binary, &config);
+	return ia_css_configure_dvs(binary, &config);
 }
 
 static void
@@ -232,7 +232,6 @@ convert_allocate_dvs_6axis_config(
 	unsigned int o_width;
 	unsigned int o_height;
 	struct ia_css_host_data *me;
-	struct gdc_warp_param_mem_s *isp_data_ptr;
 
 	assert(binary);
 	assert(dvs_6axis_config);
@@ -246,8 +245,6 @@ convert_allocate_dvs_6axis_config(
 	/*DVS only supports input frame of YUV420 or NV12. Fail for all other cases*/
 	assert((dvs_in_frame_info->format == IA_CSS_FRAME_FORMAT_NV12)
 	       || (dvs_in_frame_info->format == IA_CSS_FRAME_FORMAT_YUV420));
-
-	isp_data_ptr = (struct gdc_warp_param_mem_s *)me->address;
 
 	i_stride  = dvs_in_frame_info->padded_width;
 
@@ -270,12 +267,12 @@ convert_allocate_dvs_6axis_config(
 	return me;
 }
 
-enum ia_css_err
+int
 store_dvs_6axis_config(
     const struct ia_css_dvs_6axis_config *dvs_6axis_config,
     const struct ia_css_binary *binary,
     const struct ia_css_frame_info *dvs_in_frame_info,
-    hrt_vaddress ddr_addr_y) {
+    ia_css_ptr ddr_addr_y) {
 	struct ia_css_host_data *me;
 
 	assert(dvs_6axis_config);
@@ -288,8 +285,8 @@ store_dvs_6axis_config(
 
 	if (!me)
 	{
-		IA_CSS_LEAVE_ERR_PRIVATE(IA_CSS_ERR_CANNOT_ALLOCATE_MEMORY);
-		return IA_CSS_ERR_CANNOT_ALLOCATE_MEMORY;
+		IA_CSS_LEAVE_ERR_PRIVATE(-ENOMEM);
+		return -ENOMEM;
 	}
 
 	ia_css_params_store_ia_css_host_data(
@@ -297,5 +294,5 @@ store_dvs_6axis_config(
 	    me);
 	ia_css_host_data_free(me);
 
-	return IA_CSS_SUCCESS;
+	return 0;
 }

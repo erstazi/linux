@@ -71,6 +71,7 @@ ax25_address rose_callsign;
  * separate class since they always nest.
  */
 static struct lock_class_key rose_netdev_xmit_lock_key;
+static struct lock_class_key rose_netdev_addr_lock_key;
 
 static void rose_set_lockdep_one(struct net_device *dev,
 				 struct netdev_queue *txq,
@@ -81,6 +82,7 @@ static void rose_set_lockdep_one(struct net_device *dev,
 
 static void rose_set_lockdep_key(struct net_device *dev)
 {
+	lockdep_set_class(&dev->addr_list_lock, &rose_netdev_addr_lock_key);
 	netdev_for_each_tx_queue(dev, rose_set_lockdep_one, NULL);
 }
 
@@ -107,7 +109,7 @@ char *rose2asc(char *buf, const rose_address *addr)
 /*
  *	Compare two ROSE addresses, 0 == equal.
  */
-int rosecmp(rose_address *addr1, rose_address *addr2)
+int rosecmp(const rose_address *addr1, const rose_address *addr2)
 {
 	int i;
 
@@ -121,7 +123,8 @@ int rosecmp(rose_address *addr1, rose_address *addr2)
 /*
  *	Compare two ROSE addresses for only mask digits, 0 == equal.
  */
-int rosecmpm(rose_address *addr1, rose_address *addr2, unsigned short mask)
+int rosecmpm(const rose_address *addr1, const rose_address *addr2,
+	     unsigned short mask)
 {
 	unsigned int i, j;
 
@@ -363,7 +366,7 @@ void rose_destroy_socket(struct sock *sk)
  */
 
 static int rose_setsockopt(struct socket *sock, int level, int optname,
-	char __user *optval, unsigned int optlen)
+		sockptr_t optval, unsigned int optlen)
 {
 	struct sock *sk = sock->sk;
 	struct rose_sock *rose = rose_sk(sk);
@@ -375,7 +378,7 @@ static int rose_setsockopt(struct socket *sock, int level, int optname,
 	if (optlen < sizeof(int))
 		return -EINVAL;
 
-	if (get_user(opt, (int __user *)optval))
+	if (copy_from_sockptr(&opt, optval, sizeof(int)))
 		return -EFAULT;
 
 	switch (optname) {

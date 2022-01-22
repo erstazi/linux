@@ -99,8 +99,8 @@ int raw_hash_sk(struct sock *sk)
 
 	write_lock_bh(&h->lock);
 	sk_add_node(sk, head);
-	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
 	write_unlock_bh(&h->lock);
+	sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
 
 	return 0;
 }
@@ -260,11 +260,12 @@ static void raw_err(struct sock *sk, struct sk_buff *skb, u32 info)
 		err = EHOSTUNREACH;
 		if (code > NR_ICMP_UNREACH)
 			break;
-		err = icmp_err_convert[code].errno;
-		harderr = icmp_err_convert[code].fatal;
 		if (code == ICMP_FRAG_NEEDED) {
 			harderr = inet->pmtudisc != IP_PMTUDISC_DONT;
 			err = EMSGSIZE;
+		} else {
+			err = icmp_err_convert[code].errno;
+			harderr = icmp_err_convert[code].fatal;
 		}
 	}
 
@@ -279,7 +280,7 @@ static void raw_err(struct sock *sk, struct sk_buff *skb, u32 info)
 
 	if (inet->recverr || harderr) {
 		sk->sk_err = err;
-		sk->sk_error_report(sk);
+		sk_error_report(sk);
 	}
 }
 
@@ -478,7 +479,7 @@ static int raw_getfrag(void *from, char *to, int offset, int len, int odd,
 			skb->csum = csum_block_add(
 				skb->csum,
 				csum_partial_copy_nocheck(rfv->hdr.c + offset,
-							  to, copy, 0),
+							  to, copy),
 				odd);
 
 		odd = 0;
@@ -610,7 +611,7 @@ static int raw_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 	} else if (!ipc.oif) {
 		ipc.oif = inet->uc_index;
 	} else if (ipv4_is_lbcast(daddr) && inet->uc_index) {
-		/* oif is set, packet is to local broadcast and
+		/* oif is set, packet is to local broadcast
 		 * and uc_index is set. oif is most likely set
 		 * by sk_bound_dev_if. If uc_index != oif check if the
 		 * oif is an L3 master and uc_index is an L3 slave.
@@ -639,7 +640,7 @@ static int raw_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 			goto done;
 	}
 
-	security_sk_classify_flow(sk, flowi4_to_flowi(&fl4));
+	security_sk_classify_flow(sk, flowi4_to_flowi_common(&fl4));
 	rt = ip_route_output_flow(net, &fl4, sk);
 	if (IS_ERR(rt)) {
 		err = PTR_ERR(rt);
@@ -716,6 +717,7 @@ static int raw_bind(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 {
 	struct inet_sock *inet = inet_sk(sk);
 	struct sockaddr_in *addr = (struct sockaddr_in *) uaddr;
+	struct net *net = sock_net(sk);
 	u32 tb_id = RT_TABLE_LOCAL;
 	int ret = -EINVAL;
 	int chk_addr_ret;
@@ -724,16 +726,16 @@ static int raw_bind(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 		goto out;
 
 	if (sk->sk_bound_dev_if)
-		tb_id = l3mdev_fib_table_by_index(sock_net(sk),
-						 sk->sk_bound_dev_if) ? : tb_id;
+		tb_id = l3mdev_fib_table_by_index(net,
+						  sk->sk_bound_dev_if) ? : tb_id;
 
-	chk_addr_ret = inet_addr_type_table(sock_net(sk), addr->sin_addr.s_addr,
-					    tb_id);
+	chk_addr_ret = inet_addr_type_table(net, addr->sin_addr.s_addr, tb_id);
 
 	ret = -EADDRNOTAVAIL;
-	if (addr->sin_addr.s_addr && chk_addr_ret != RTN_LOCAL &&
-	    chk_addr_ret != RTN_MULTICAST && chk_addr_ret != RTN_BROADCAST)
+	if (!inet_addr_valid_or_nonlocal(net, inet, addr->sin_addr.s_addr,
+					 chk_addr_ret))
 		goto out;
+
 	inet->inet_rcv_saddr = inet->inet_saddr = addr->sin_addr.s_addr;
 	if (chk_addr_ret == RTN_MULTICAST || chk_addr_ret == RTN_BROADCAST)
 		inet->inet_saddr = 0;  /* Use device */
@@ -809,11 +811,11 @@ static int raw_sk_init(struct sock *sk)
 	return 0;
 }
 
-static int raw_seticmpfilter(struct sock *sk, char __user *optval, int optlen)
+static int raw_seticmpfilter(struct sock *sk, sockptr_t optval, int optlen)
 {
 	if (optlen > sizeof(struct icmp_filter))
 		optlen = sizeof(struct icmp_filter);
-	if (copy_from_user(&raw_sk(sk)->filter, optval, optlen))
+	if (copy_from_sockptr(&raw_sk(sk)->filter, optval, optlen))
 		return -EFAULT;
 	return 0;
 }
@@ -838,7 +840,7 @@ out:	return ret;
 }
 
 static int do_raw_setsockopt(struct sock *sk, int level, int optname,
-			  char __user *optval, unsigned int optlen)
+			     sockptr_t optval, unsigned int optlen)
 {
 	if (optname == ICMP_FILTER) {
 		if (inet_sk(sk)->inet_num != IPPROTO_ICMP)
@@ -850,22 +852,12 @@ static int do_raw_setsockopt(struct sock *sk, int level, int optname,
 }
 
 static int raw_setsockopt(struct sock *sk, int level, int optname,
-			  char __user *optval, unsigned int optlen)
+			  sockptr_t optval, unsigned int optlen)
 {
 	if (level != SOL_RAW)
 		return ip_setsockopt(sk, level, optname, optval, optlen);
 	return do_raw_setsockopt(sk, level, optname, optval, optlen);
 }
-
-#ifdef CONFIG_COMPAT
-static int compat_raw_setsockopt(struct sock *sk, int level, int optname,
-				 char __user *optval, unsigned int optlen)
-{
-	if (level != SOL_RAW)
-		return compat_ip_setsockopt(sk, level, optname, optval, optlen);
-	return do_raw_setsockopt(sk, level, optname, optval, optlen);
-}
-#endif
 
 static int do_raw_getsockopt(struct sock *sk, int level, int optname,
 			  char __user *optval, int __user *optlen)
@@ -886,16 +878,6 @@ static int raw_getsockopt(struct sock *sk, int level, int optname,
 		return ip_getsockopt(sk, level, optname, optval, optlen);
 	return do_raw_getsockopt(sk, level, optname, optval, optlen);
 }
-
-#ifdef CONFIG_COMPAT
-static int compat_raw_getsockopt(struct sock *sk, int level, int optname,
-				 char __user *optval, int __user *optlen)
-{
-	if (level != SOL_RAW)
-		return compat_ip_getsockopt(sk, level, optname, optval, optlen);
-	return do_raw_getsockopt(sk, level, optname, optval, optlen);
-}
-#endif
 
 static int raw_ioctl(struct sock *sk, int cmd, unsigned long arg)
 {
@@ -948,7 +930,7 @@ int raw_abort(struct sock *sk, int err)
 	lock_sock(sk);
 
 	sk->sk_err = err;
-	sk->sk_error_report(sk);
+	sk_error_report(sk);
 	__udp_disconnect(sk, 0);
 
 	release_sock(sk);
@@ -980,8 +962,6 @@ struct proto raw_prot = {
 	.usersize	   = sizeof_field(struct raw_sock, filter),
 	.h.raw_hash	   = &raw_v4_hashinfo,
 #ifdef CONFIG_COMPAT
-	.compat_setsockopt = compat_raw_setsockopt,
-	.compat_getsockopt = compat_raw_getsockopt,
 	.compat_ioctl	   = compat_raw_ioctl,
 #endif
 	.diag_destroy	   = raw_abort,
